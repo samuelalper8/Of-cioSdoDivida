@@ -10,38 +10,141 @@ import os
 from datetime import datetime
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Gerador de Ofícios - Saldo Dívida RFB", layout="wide")
+st.set_page_config(page_title="Gerador de Ofícios - ConPrev", layout="wide")
 
-# ================= 1. FUNÇÕES DE MANIPULAÇÃO WORD =================
+# ================= 1. BASE DE DADOS DE PREFEITOS (EMBUTIDA) =================
+# O sistema busca pela chave em MAIÚSCULO.
+DB_PREFEITOS = {
+    "AMARALINA": "Dásio Marques",
+    "BALIZA": "Fernanda Nolasco",
+    "BARRO ALTO": "Prof. Álvaro",
+    "BELA VISTA DE GOIAS": "Nárcia Kelly",
+    "BRAZABRANTES": "Jânio",
+    "BURITI ALEGRE": "André de Sousa",
+    "CAIAPÔNIA": "Argemiro Rodrigues",
+    "CAIAPONIA": "Argemiro Rodrigues",
+    "CAMPINAÇU": "Dr. Douglas",
+    "CAMPINACU": "Dr. Douglas",
+    "CERES": "Inês Brito",
+    "CÓRREGO DO OURO": "Lúcia Lolly",
+    "CORREGO DO OURO": "Lúcia Lolly",
+    "CORUMBÁ GOIÁS": "Chico Vaca",
+    "CORUMBA GOIAS": "Chico Vaca",
+    "CRISTALINA": "Daniel do Sindicato",
+    "CRIXÁS": "Dr. Carlos",
+    "CRIXAS": "Dr. Carlos",
+    "GOIÁS": "Prof. Anderson",
+    "GOIAS": "Prof. Anderson",
+    "GOIATUBA": "Zezinho Vieira",
+    "HIDROLINA": "Zica",
+    "ITABERAÍ": "Wilian",
+    "ITABERAI": "Wilian",
+    "ITAPACI": "Mário Macaco",
+    "JARAGUÁ": "Paulo Vitor",
+    "JARAGUA": "Paulo Vitor",
+    "MONTES CLAROS GOIÁS": "Dr. Romer",
+    "MONTES CLAROS GOIAS": "Dr. Romer",
+    "NOVO GAMA": "Carlinhos do Mangão",
+    "NERÓPOLIS": "Luiz Alberto Franco Araujo",
+    "NEROPOLIS": "Luiz Alberto Franco Araujo",
+    "PARANAIGUARA": "Adalberto Amorim",
+    "PEROLÂNDIA": "Grete",
+    "PEROLANDIA": "Grete",
+    "PILAR DE GOIÁS": "Tiagão",
+    "PILAR DE GOIAS": "Tiagão",
+    "PIRANHAS": "Marco Rogério",
+    "RIANÁPOLIS": "Zé Carlos",
+    "RIANAPOLIS": "Zé Carlos",
+    "RIO QUENTE": "Ana Paula",
+    "SÃO FRANCISCO GOIÁS": "Cleuton",
+    "SAO FRANCISCO GOIAS": "Cleuton",
+    "SÃO LUÍS MONTES BELOS": "Major Eldecírio",
+    "SAO LUIS MONTES BELOS": "Major Eldecírio",
+    "SERRANÓPOLIS": "Tio Dé",
+    "SERRANOPOLIS": "Tio Dé",
+    "TERESINA GOIÁS": "Baiano",
+    "TERESINA GOIAS": "Baiano",
+    "TRINDADE": "Marden Júnior",
+    "UIRAPURU": "Elivan Carreiro",
+    "ALCINÓPOLIS": "Dalmy Crisóstomo",
+    "ALCINOPOLIS": "Dalmy Crisóstomo",
+    "ANASTÁCIO": "Nildo Alves",
+    "ANASTACIO": "Nildo Alves",
+    "AQUIDAUANA": "Mauro Luiz Batista",
+    "CHAPADÃO DO SUL": "João Carlos Krug",
+    "CHAPADAO DO SUL": "João Carlos Krug",
+    "COXIM": "Edilson Magro",
+    "IGUATEMI": "Dr. Lídio",
+    "JAPORÃ": "Paulo César",
+    "JAPORA": "Paulo César",
+    "JARAGUARI": "Edson Rodrigues",
+    "SETE QUEDAS": "Chico Biasi",
+    "SONORA": "Enelto Ramos",
+    "TACURU": "Rogério Torquetti",
+    "ALMAS": "Vagner",
+    "BANDEIRANTES DO TOCANTINS": "Saulo Gonçalves Borges",
+    "BARRA DO OURO": "Nélio",
+    "BREJINHO DE NAZARÉ": "Miyuki",
+    "BREJINHO DE NAZARE": "Miyuki",
+    "CRISTALÂNDIA": "Wilson Junior Carvalho De Oliveira",
+    "CRISTALANDIA": "Wilson Junior Carvalho De Oliveira",
+    "GUARAÍ": "Fátima Coelho",
+    "GUARAI": "Fátima Coelho",
+    "JAÚ DO TOCANTINS": "Luciene Lourenco De Araujo",
+    "JAU DO TOCANTINS": "Luciene Lourenco De Araujo",
+    "LAGOA DA CONFUSÃO": "Thiago Soares Carlos",
+    "LAGOA DA CONFUSAO": "Thiago Soares Carlos",
+    "LAJEADO": "Júnior",
+    "MAURILÂNDIA DO TOCANTINS": "Rafael",
+    "MAURILANDIA DO TOCANTINS": "Rafael",
+    "NATIVIDADE": "Dr. Thiago",
+    "PALMEIRAS DO TOCANTINS": "Nalva",
+    "PALMEIRÓPOLIS": "Bartolomeu",
+    "PALMEIROPOLIS": "Bartolomeu",
+    "PARAÍSO DO TOCANTINS": "Celso Morais",
+    "PARAISO DO TOCANTINS": "Celso Morais",
+    "PARANÃ": "Fabrício Viana",
+    "PARANA": "Fabrício Viana",
+    "PEDRO AFONSO": "Joaquim Pinheiro",
+    "PEIXE": "Zé Augusto",
+    "SANTA MARIA DO TOCANTINS": "Itamar",
+    "SANTA RITA DO TOCANTINS": "Neila",
+    "SÃO VALÉRIO DA NATIVIDADE": "Prof. Olímpio",
+    "SAO VALERIO DA NATIVIDADE": "Prof. Olímpio",
+    "SILVANÓPOLIS": "Gernivon",
+    "SILVANOPOLIS": "Gernivon"
+}
+
+# ================= 2. FUNÇÕES DE MANIPULAÇÃO WORD =================
 
 def replace_everywhere(doc: Document, old: str, new: str) -> None:
-    """Substitui texto em parágrafos, tabelas e cabeçalhos."""
-    def repl(par):
-        if old in par.text:
-            for run in par.runs:
-                if old in run.text:
-                    run.text = run.text.replace(old, new)
-            if old in par.text:
-                par.text = par.text.replace(old, new)
-
-    for p in doc.paragraphs: repl(p)
+    """Substitui texto preservando a formatação o máximo possível."""
+    for p in doc.paragraphs:
+        if old in p.text:
+            p.text = p.text.replace(old, new)
+            
     for t in doc.tables:
         for row in t.rows:
             for cell in row.cells:
-                for p in cell.paragraphs: repl(p)
+                for p in cell.paragraphs:
+                    if old in p.text:
+                        p.text = p.text.replace(old, new)
+                        
     for s in doc.sections:
         for h in [s.header, s.first_page_header, s.footer, s.first_page_footer]:
             if h:
-                for p in h.paragraphs: repl(p)
+                for p in h.paragraphs:
+                    if old in p.text:
+                        p.text = p.text.replace(old, new)
 
 def mover_tabela_para_placeholder(doc, table, placeholder_text):
-    """Move a tabela para o local do placeholder {{TABELA_DEBITOS}}."""
+    """Move a tabela para o local do placeholder."""
     target_p = None
     for p in doc.paragraphs:
         if placeholder_text in p.text:
             target_p = p
             break
-            
+    
     if target_p:
         target_p._p.addnext(table._tbl)
         target_p.text = "" 
@@ -95,24 +198,9 @@ def criar_tabela_divida(doc, df_municipio):
                 
     return table
 
-def carregar_prefeitos():
-    """Lê prefeitos.csv do repositório (se existir)."""
-    arquivo = "prefeitos.csv"
-    dic = {}
-    if os.path.exists(arquivo):
-        try:
-            try: df = pd.read_csv(arquivo, encoding='utf-8')
-            except: df = pd.read_csv(arquivo, encoding='latin-1', sep=',')
-            
-            for _, row in df.iterrows():
-                if 'Município' in df.columns:
-                    dic[str(row['Município']).strip().upper()] = str(row['Prefeito']).strip()
-        except: pass
-    return dic
-
-# ================= 2. INTERFACE =================
-st.title("Geração de Ofícios - Saldo Dívida RFB")
-st.markdown("Faça upload da **Planilha** e do **Modelo Word** para gerar os ofícios em lote.")
+# ================= 3. INTERFACE =================
+st.title("Gerador de Ofícios em Lote")
+st.markdown("Faça upload da **Planilha Excel** e do **Modelo Word**.")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -121,36 +209,34 @@ with col1:
 with col2:
     uploaded_template = st.file_uploader("2. Modelo Word (.docx)", type=["docx"])
 
-st.sidebar.header("Parâmetros")
-num_inicial = st.sidebar.number_input("Nº Inicial do Ofício", value=1, step=1)
+st.sidebar.header("Configuração")
+num_inicial = st.sidebar.number_input("Número Inicial", value=1, step=1)
 ano_doc = st.sidebar.number_input("Ano", value=2026)
 
-with st.expander("Verificar Placeholders no Word"):
+with st.expander("ℹ️ Placeholders Obrigatórios no Word"):
     st.markdown("""
-    O seu arquivo `.docx` deve conter:
-    - `{{MUNICIPIO}}`, `{{UF}}`, `{{PREFEITO}}`
-    - `{{NUM_OFICIO}}`
-    - `{{DATA_EXTENSO}}`
-    - **`{{TABELA_DEBITOS}}`** (Em uma linha vazia, onde entra a tabela)
+    * `{{MUNICIPIO}}`
+    * `{{PREFEITO}}` (Será preenchido automaticamente pela lista)
+    * `{{UF}}`
+    * `{{NUM_OFICIO}}`
+    * `{{DATA_EXTENSO}}`
+    * **`{{TABELA}}`** (Em uma linha vazia, onde entra a tabela)
     """)
 
-# ================= 3. PROCESSAMENTO =================
+# ================= 4. PROCESSAMENTO =================
 if st.button("🚀 Gerar Arquivos (ZIP)"):
-    if not uploaded_excel:
-        st.error("Faltou a planilha Excel!")
-        st.stop()
-    
-    if not uploaded_template:
-        st.error("Faltou o Modelo Word!")
+    if not uploaded_excel or not uploaded_template:
+        st.error("Por favor, faça upload dos dois arquivos.")
         st.stop()
 
     try:
         df = pd.read_excel(uploaded_excel, engine='openpyxl')
         df = df.dropna(subset=['Processo'])
-        db_prefeitos = carregar_prefeitos()
         
         col_municipio = 'Município' if 'Município' in df.columns else df.columns[0]
-        municipios = sorted(df[col_municipio].astype(str).unique())
+        # Garante que é string e remove espaços extras
+        df[col_municipio] = df[col_municipio].astype(str).str.strip()
+        municipios = sorted(df[col_municipio].unique())
         
         zip_buffer = io.BytesIO()
         contador = num_inicial
@@ -164,12 +250,13 @@ if st.button("🚀 Gerar Arquivos (ZIP)"):
         
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
             for i, muni in enumerate(municipios):
-                # Reseta o ponteiro do template para ler do zero a cada iteração
+                # Carrega modelo limpo
                 uploaded_template.seek(0)
                 doc = Document(uploaded_template)
 
                 df_muni = df[df[col_municipio] == muni]
                 
+                # --- Busca UF ---
                 uf = "GO"
                 if 'Arquivo' in df_muni.columns:
                     try: 
@@ -177,13 +264,17 @@ if st.button("🚀 Gerar Arquivos (ZIP)"):
                         if len(parts) > 0 and len(parts[0].strip()) == 2: uf = parts[0].strip()
                     except: pass
                 
-                nome_pref = db_prefeitos.get(muni.upper(), "PREFEITO(A) MUNICIPAL")
+                # --- BUSCA PREFEITO NA LISTA EMBUTIDA ---
+                # Converte o nome da cidade para maiúsculo para buscar no dicionário
+                nome_pref = DB_PREFEITOS.get(muni.upper(), "PREFEITO(A) MUNICIPAL")
+                
                 num_fmt = f"{contador:03d}/{ano_doc}"
                 
+                # Substituições
                 replaces = {
                     "{{MUNICIPIO}}": muni.upper(),
                     "{{UF}}": uf,
-                    "{{PREFEITO}}": nome_pref.upper(),
+                    "{{PREFEITO}}": nome_pref.upper(), # Coloca o nome em maiúsculo
                     "{{NUM_OFICIO}}": num_fmt,
                     "{{DATA_EXTENSO}}": data_extenso
                 }
@@ -191,9 +282,13 @@ if st.button("🚀 Gerar Arquivos (ZIP)"):
                 for k, v in replaces.items():
                     replace_everywhere(doc, k, v)
                 
+                # Tabela
                 tabela = criar_tabela_divida(doc, df_muni)
-                sucesso_mover = mover_tabela_para_placeholder(doc, tabela, "{{TABELA_DEBITOS}}")
-                
+                sucesso = mover_tabela_para_placeholder(doc, tabela, "{{TABELA}}")
+                if not sucesso:
+                    mover_tabela_para_placeholder(doc, tabela, "{{TABELA_DEBITOS}}")
+
+                # Salva
                 doc_io = io.BytesIO()
                 doc.save(doc_io)
                 
@@ -204,9 +299,9 @@ if st.button("🚀 Gerar Arquivos (ZIP)"):
                 progress.progress((i+1)/len(municipios))
                 
         st.success(f"✅ Sucesso! {len(municipios)} ofícios gerados.")
-        st.download_button("⬇️ Baixar Todos (ZIP)", zip_buffer.getvalue(), 
-                           file_name=f"Oficios_SaldoDivida_{datetime.now().strftime('%H%M')}.zip", 
+        st.download_button("⬇️ Baixar ZIP", zip_buffer.getvalue(), 
+                           file_name=f"Oficios_Com_Prefeitos_{datetime.now().strftime('%H%M')}.zip", 
                            mime="application/zip")
 
     except Exception as e:
-        st.error(f"Erro detalhado: {e}")
+        st.error(f"Erro: {e}")
