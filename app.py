@@ -4,17 +4,18 @@ from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.oxml.ns import qn
 import io
 import zipfile
 import os
 from datetime import datetime
 
 # --- CONFIGURAÇÕES DE CAMINHO ---
-CAMINHO_MODELO_LOCAL = r"C:\Users\Estação-reserva\OneDrive\Área de Trabalho\Z_APP_SaldoDivida\Modelo_Saldo_Divida.docx"
-NOME_ARQUIVO_MODELO = "Modelo_Saldo_Divida.docx"
+# Pasta onde o script vai procurar o modelo automaticamente
+PASTA_BASE = r"C:\Users\Estação-reserva\OneDrive\Área de Trabalho\Z_APP_SaldoDivida"
+NOME_ARQUIVO_MODELO = "Modelo_OficioSaldoDivida.docx"
+CAMINHO_MODELO_LOCAL = os.path.join(PASTA_BASE, NOME_ARQUIVO_MODELO)
 
-st.set_page_config(page_title="Gerador de Ofícios (Word)", layout="wide")
+st.set_page_config(page_title="Gerador de Ofícios - Saldo Dívida RFB", layout="wide")
 
 # ================= 1. FUNÇÕES DE MANIPULAÇÃO WORD =================
 
@@ -44,31 +45,28 @@ def mover_tabela_para_placeholder(doc, table, placeholder_text):
     """
     Encontra o parágrafo que tem o placeholder (ex: {{TABELA_DEBITOS}}),
     move a tabela para logo após ele e apaga o texto do placeholder.
-    Isso permite que a tabela fique entre o texto e as assinaturas.
     """
     target_p = None
+    # Procura o parágrafo alvo
     for p in doc.paragraphs:
         if placeholder_text in p.text:
             target_p = p
             break
             
     if target_p:
-        # Lógica XML para mover a tabela (table._tbl) para depois do parágrafo (target_p._p)
+        # Move a tabela (XML) para depois do parágrafo encontrado
         target_p._p.addnext(table._tbl)
-        target_p.text = "" # Limpa o placeholder
+        target_p.text = "" # Limpa o texto do placeholder
         return True
     return False
 
 def criar_tabela_divida(doc, df_municipio):
-    """Cria a tabela e retorna o objeto table para ser posicionado."""
+    """Cria a tabela e retorna o objeto table."""
+    # Cria tabela com 3 colunas
     table = doc.add_table(rows=1, cols=3)
     table.style = 'Table Grid'
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False 
-    
-    # Define larguras relativas (opcional, ajustável via XML se necessário)
-    # python-docx não lida bem com larguras fixas em cm sem hacks, 
-    # mas o autofit costuma funcionar bem para texto.
 
     # Cabeçalho
     hdr_cells = table.rows[0].cells
@@ -76,11 +74,13 @@ def criar_tabela_divida(doc, df_municipio):
     hdr_cells[1].text = 'Processo / Documento'
     hdr_cells[2].text = 'Saldo em 31/12/2025'
     
+    # Formatação do Cabeçalho
     for cell in hdr_cells:
-        cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
-        for run in cell.paragraphs[0].runs:
-            run.font.bold = True
-            run.font.size = Pt(10)
+        for p in cell.paragraphs:
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for run in p.runs:
+                run.font.bold = True
+                run.font.size = Pt(10)
 
     # Dados
     for index, row in df_municipio.iterrows():
@@ -88,12 +88,13 @@ def criar_tabela_divida(doc, df_municipio):
         
         # Lógica do Órgão
         orgao = "Receita Federal do Brasil"
+        # Se quiser lógica para PGFN, descomente abaixo:
         if "PGFN" in str(row.get('Sistema', '')): orgao = "Procuradoria da Fazenda Nacional"
             
         processo = str(row['Processo'])
         val = row['Valor Original']
         
-        # Formatação Monetária
+        # Formatação Monetária (R$ 1.000,00)
         if isinstance(val, (int, float)):
             valor_str = f"{val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         else:
@@ -103,10 +104,16 @@ def criar_tabela_divida(doc, df_municipio):
         row_cells[1].text = processo
         row_cells[2].text = valor_str
         
+        # Formatação das Células
         for cell in row_cells:
-            cell.vertical_alignment = 1
+            cell.vertical_alignment = 1 # Center
             for p in cell.paragraphs:
-                p.runs[0].font.size = Pt(10)
+                if p.runs:
+                    p.runs[0].font.size = Pt(10)
+                else:
+                    # Caso parágrafo esteja vazio, adiciona run
+                    run = p.add_run()
+                    run.font.size = Pt(10)
                 
     return table
 
@@ -129,16 +136,15 @@ def carregar_prefeitos():
 st.title("Geração de Ofícios - Saldo Dívida RFB")
 st.markdown("---")
 
-# --- Lógica de Seleção do Arquivo Word ---
+# --- Verificação do Modelo Local ---
 usar_modelo_local = False
-doc_template = None
 
-# Verifica se o arquivo existe na pasta indicada
 if os.path.exists(CAMINHO_MODELO_LOCAL):
-    st.success(f"✅ Modelo encontrado em: `{CAMINHO_MODELO_LOCAL}`")
+    st.success(f"✅ Modelo Final Detectado: `{NOME_ARQUIVO_MODELO}`")
     usar_modelo_local = True
 else:
-    st.warning(f"⚠️ Modelo não encontrado na pasta padrão. Por favor, faça o upload.")
+    st.warning(f"⚠️ Arquivo `{NOME_ARQUIVO_MODELO}` não encontrado na pasta `Z_APP_SaldoDivida`.")
+    st.info("Por favor, faça o upload manual abaixo se não estiver na pasta.")
 
 # Colunas de Upload
 col1, col2 = st.columns(2)
@@ -149,28 +155,25 @@ with col2:
     if not usar_modelo_local:
         uploaded_template = st.file_uploader("2. Modelo Word (.docx)", type=["docx"])
     else:
-        st.info("Usando modelo local. (Para trocar, renomeie ou remova o arquivo da pasta).")
+        st.write("📂 Usando modelo da pasta local.")
         uploaded_template = None
 
 # Sidebar Config
 st.sidebar.header("Parâmetros")
-num_inicial = st.sidebar.number_input("Nº Inicial", value=1, step=1)
+num_inicial = st.sidebar.number_input("Nº Inicial do Ofício", value=1, step=1)
 ano_doc = st.sidebar.number_input("Ano", value=2026)
 
-# Instruções
-with st.expander("📝 Instruções para o Modelo Word"):
+with st.expander("Verificar Placeholders no Word"):
     st.markdown("""
-    Certifique-se que o arquivo `.docx` tenha estes códigos onde os dados devem entrar:
-    - `{{MUNICIPIO}}`
-    - `{{UF}}`
-    - `{{PREFEITO}}`
-    - `{{NUM_OFICIO}}` (Ex: 001/2026)
-    - `{{DATA_EXTENSO}}` (Ex: Goiânia, 27 de...)
-    - `{{TABELA_DEBITOS}}` **(Coloque isso numa linha sozinha entre o texto e a assinatura)**
+    O seu arquivo **Modelo_OficioSaldoDivida.docx** deve conter:
+    - `{{MUNICIPIO}}`, `{{UF}}`, `{{PREFEITO}}`
+    - `{{NUM_OFICIO}}`
+    - `{{DATA_EXTENSO}}`
+    - **`{{TABELA_DEBITOS}}`** (Onde a tabela será inserida)
     """)
 
 # ================= 3. PROCESSAMENTO =================
-if st.button("Gerar Arquivos (ZIP)"):
+if st.button("🚀 Gerar Arquivos (ZIP)"):
     # Validação
     if not uploaded_excel:
         st.error("Faltou a planilha Excel!")
@@ -203,7 +206,7 @@ if st.button("Gerar Arquivos (ZIP)"):
         
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
             for i, muni in enumerate(municipios):
-                # Carrega o Word (Do disco ou do Upload)
+                # Carrega o Word (Resetando a cada loop)
                 if usar_modelo_local:
                     doc = Document(CAMINHO_MODELO_LOCAL)
                 else:
@@ -227,7 +230,7 @@ if st.button("Gerar Arquivos (ZIP)"):
                 # Variáveis
                 num_fmt = f"{contador:03d}/{ano_doc}" # 001/2026
                 
-                # Substituições
+                # Substituições de Texto
                 replaces = {
                     "{{MUNICIPIO}}": muni.upper(),
                     "{{UF}}": uf,
@@ -239,29 +242,27 @@ if st.button("Gerar Arquivos (ZIP)"):
                 for k, v in replaces.items():
                     replace_everywhere(doc, k, v)
                 
-                # Tabela
-                # 1. Cria a tabela (ela vai pro fim do doc temporariamente)
+                # Inserção e Posicionamento da Tabela
                 tabela = criar_tabela_divida(doc, df_muni)
-                
-                # 2. Tenta mover para o placeholder {{TABELA_DEBITOS}}
                 sucesso_mover = mover_tabela_para_placeholder(doc, tabela, "{{TABELA_DEBITOS}}")
                 
                 if not sucesso_mover:
-                    # Se não achou o placeholder, avisa no console (opcional)
-                    print(f"Aviso: Placeholder de tabela não encontrado para {muni}")
+                    print(f"⚠️ Placeholder {{TABELA_DEBITOS}} não encontrado em {muni}.")
 
                 # Salva no ZIP
                 doc_io = io.BytesIO()
                 doc.save(doc_io)
-                zf.writestr(f"{contador:03d}-{ano_doc} - {muni}.docx", doc_io.getvalue())
+                # Nome do arquivo dentro do ZIP
+                nome_zip = f"{contador:03d}-{ano_doc} - {muni}.docx"
+                zf.writestr(nome_zip, doc_io.getvalue())
                 
                 contador += 1
                 progress.progress((i+1)/len(municipios))
                 
-        st.success(f"Sucesso! {len(municipios)} ofícios gerados.")
-        st.download_button("⬇️ Baixar Ofícios (ZIP)", zip_buffer.getvalue(), 
+        st.success(f"✅ Sucesso! {len(municipios)} ofícios gerados.")
+        st.download_button("⬇️ Baixar Todos (ZIP)", zip_buffer.getvalue(), 
                            file_name=f"Oficios_SaldoDivida_{datetime.now().strftime('%H%M')}.zip", 
                            mime="application/zip")
 
     except Exception as e:
-        st.error(f"Erro: {e}")
+        st.error(f"Erro durante o processamento: {e}")
