@@ -13,7 +13,6 @@ from datetime import datetime
 st.set_page_config(page_title="Gerador de Ofícios - ConPrev", layout="wide")
 
 # ================= 1. BASE DE DADOS DE PREFEITOS (EMBUTIDA) =================
-# O sistema busca pela chave em MAIÚSCULO.
 DB_PREFEITOS = {
     "AMARALINA": "Dásio Marques",
     "BALIZA": "Fernanda Nolasco",
@@ -118,58 +117,45 @@ DB_PREFEITOS = {
 # ================= 2. FUNÇÕES DE MANIPULAÇÃO WORD =================
 
 def replace_everywhere(doc: Document, old: str, new: str) -> None:
-    """Substitui texto preservando a formatação o máximo possível."""
-    for p in doc.paragraphs:
-        if old in p.text:
-            p.text = p.text.replace(old, new)
-            
+    """Substitui texto em parágrafos, tabelas e cabeçalhos."""
+    def repl(par):
+        if old in par.text:
+            # Tenta substituir preservando formatação (runs)
+            for run in par.runs:
+                if old in run.text:
+                    run.text = run.text.replace(old, new)
+            # Fallback
+            if old in par.text:
+                par.text = par.text.replace(old, new)
+
+    for p in doc.paragraphs: repl(p)
     for t in doc.tables:
         for row in t.rows:
             for cell in row.cells:
-                for p in cell.paragraphs:
-                    if old in p.text:
-                        p.text = p.text.replace(old, new)
-                        
+                for p in cell.paragraphs: repl(p)
     for s in doc.sections:
         for h in [s.header, s.first_page_header, s.footer, s.first_page_footer]:
             if h:
-                for p in h.paragraphs:
-                    if old in p.text:
-                        p.text = p.text.replace(old, new)
+                for p in h.paragraphs: repl(p)
 
-def mover_tabela_para_placeholder(doc, table, placeholder_text):
-    """Move a tabela para o local do placeholder."""
-    target_p = None
-    for p in doc.paragraphs:
-        if placeholder_text in p.text:
-            target_p = p
-            break
-    
-    if target_p:
-        target_p._p.addnext(table._tbl)
-        target_p.text = "" 
-        return True
-    return False
-
-def criar_tabela_divida(doc, df_municipio):
-    """Cria a tabela de débitos."""
-    table = doc.add_table(rows=1, cols=3)
+def preencher_tabela(table, df_municipio):
+    """Preenche a tabela com dados."""
     table.style = 'Table Grid'
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False 
 
     # Cabeçalho
     hdr_cells = table.rows[0].cells
-    hdr_cells[0].text = 'Órgão'
-    hdr_cells[1].text = 'Processo / Documento'
-    hdr_cells[2].text = 'Saldo em 31/12/2025'
-    
-    for cell in hdr_cells:
-        for p in cell.paragraphs:
+    titulos = ['Órgão', 'Processo / Documento', 'Saldo em 31/12/2025']
+    for i, titulo in enumerate(titulos):
+        hdr_cells[i].text = titulo
+        for p in hdr_cells[i].paragraphs:
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             for run in p.runs:
                 run.font.bold = True
                 run.font.size = Pt(10)
+            if not p.runs: 
+                 p.add_run(titulo).font.bold = True
 
     # Dados
     for index, row in df_municipio.iterrows():
@@ -195,12 +181,23 @@ def criar_tabela_divida(doc, df_municipio):
             for p in cell.paragraphs:
                 if p.runs: p.runs[0].font.size = Pt(10)
                 else: p.add_run().font.size = Pt(10)
-                
-    return table
+
+def inserir_tabela_no_placeholder(doc, df_municipio, placeholder="{{TABELA}}"):
+    """Substitui o placeholder pela tabela no local exato."""
+    found = False
+    for paragraph in doc.paragraphs:
+        if placeholder in paragraph.text:
+            paragraph.text = ""
+            table = doc.add_table(rows=1, cols=3)
+            paragraph._p.addnext(table._tbl)
+            preencher_tabela(table, df_municipio)
+            found = True
+            break
+    return found
 
 # ================= 3. INTERFACE =================
-st.title("Gerador de Ofícios em Lote")
-st.markdown("Faça upload da **Planilha Excel** e do **Modelo Word**.")
+st.title("Gerador de Ofícios - Saldo Dívida RFB")
+st.markdown("Faça upload da **Planilha** e do **Modelo Word**.")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -210,23 +207,19 @@ with col2:
     uploaded_template = st.file_uploader("2. Modelo Word (.docx)", type=["docx"])
 
 st.sidebar.header("Configuração")
-num_inicial = st.sidebar.number_input("Número Inicial", value=1, step=1)
+num_inicial = st.sidebar.number_input("Número Inicial", value=46, step=1)
 ano_doc = st.sidebar.number_input("Ano", value=2026)
 
-with st.expander("ℹ️ Placeholders Obrigatórios no Word"):
+with st.expander("ℹ️ Placeholders e Dicas"):
     st.markdown("""
-    * `{{MUNICIPIO}}`
-    * `{{PREFEITO}}` (Será preenchido automaticamente pela lista)
-    * `{{UF}}`
-    * `{{NUM_OFICIO}}`
-    * `{{DATA_EXTENSO}}`
-    * **`{{TABELA}}`** (Em uma linha vazia, onde entra a tabela)
+    * **`{{TABELA}}`**: Use este placeholder em uma linha limpa para inserir a tabela.
+    * O sistema preenche automaticamente: `{{MUNICIPIO}}`, `{{UF}}`, `{{PREFEITO}}`, `{{NUM_OFICIO}}`.
     """)
 
 # ================= 4. PROCESSAMENTO =================
 if st.button("🚀 Gerar Arquivos (ZIP)"):
     if not uploaded_excel or not uploaded_template:
-        st.error("Por favor, faça upload dos dois arquivos.")
+        st.error("Uploads obrigatórios faltando!")
         st.stop()
 
     try:
@@ -234,7 +227,6 @@ if st.button("🚀 Gerar Arquivos (ZIP)"):
         df = df.dropna(subset=['Processo'])
         
         col_municipio = 'Município' if 'Município' in df.columns else df.columns[0]
-        # Garante que é string e remove espaços extras
         df[col_municipio] = df[col_municipio].astype(str).str.strip()
         municipios = sorted(df[col_municipio].unique())
         
@@ -247,10 +239,10 @@ if st.button("🚀 Gerar Arquivos (ZIP)"):
         data_extenso = f"Goiânia, {hoje.day} de {meses[hoje.month]} de {hoje.year}."
 
         progress = st.progress(0)
+        logs = []
         
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
             for i, muni in enumerate(municipios):
-                # Carrega modelo limpo
                 uploaded_template.seek(0)
                 doc = Document(uploaded_template)
 
@@ -264,17 +256,14 @@ if st.button("🚀 Gerar Arquivos (ZIP)"):
                         if len(parts) > 0 and len(parts[0].strip()) == 2: uf = parts[0].strip()
                     except: pass
                 
-                # --- BUSCA PREFEITO NA LISTA EMBUTIDA ---
-                # Converte o nome da cidade para maiúsculo para buscar no dicionário
                 nome_pref = DB_PREFEITOS.get(muni.upper(), "PREFEITO(A) MUNICIPAL")
-                
                 num_fmt = f"{contador:03d}/{ano_doc}"
                 
                 # Substituições
                 replaces = {
                     "{{MUNICIPIO}}": muni.upper(),
                     "{{UF}}": uf,
-                    "{{PREFEITO}}": nome_pref.upper(), # Coloca o nome em maiúsculo
+                    "{{PREFEITO}}": nome_pref.upper(),
                     "{{NUM_OFICIO}}": num_fmt,
                     "{{DATA_EXTENSO}}": data_extenso
                 }
@@ -283,24 +272,34 @@ if st.button("🚀 Gerar Arquivos (ZIP)"):
                     replace_everywhere(doc, k, v)
                 
                 # Tabela
-                tabela = criar_tabela_divida(doc, df_muni)
-                sucesso = mover_tabela_para_placeholder(doc, tabela, "{{TABELA}}")
+                sucesso = inserir_tabela_no_placeholder(doc, df_muni, "{{TABELA}}")
                 if not sucesso:
-                    mover_tabela_para_placeholder(doc, tabela, "{{TABELA_DEBITOS}}")
+                    sucesso = inserir_tabela_no_placeholder(doc, df_muni, "{{TABELA_DEBITOS}}")
+                
+                if not sucesso:
+                    logs.append(f"⚠️ {muni}: Placeholder {{TABELA}} não encontrado. Tabela foi pro final.")
+                    table_fallback = doc.add_table(rows=1, cols=3)
+                    preencher_tabela(table_fallback, df_muni)
 
-                # Salva
+                # Salva no ZIP
                 doc_io = io.BytesIO()
                 doc.save(doc_io)
                 
-                nome_zip = f"{contador:03d}-{ano_doc} - {muni}.docx"
+                # --- NOME DO ARQUIVO ATUALIZADO ---
+                nome_zip = f"{contador:03d}-{ano_doc} - {uf} - {muni} - Saldo Divida RFB-PGFN.docx"
                 zf.writestr(nome_zip, doc_io.getvalue())
                 
                 contador += 1
                 progress.progress((i+1)/len(municipios))
-                
-        st.success(f"✅ Sucesso! {len(municipios)} ofícios gerados.")
-        st.download_button("⬇️ Baixar ZIP", zip_buffer.getvalue(), 
-                           file_name=f"Oficios_Com_Prefeitos_{datetime.now().strftime('%H%M')}.zip", 
+        
+        st.success(f"✅ Processamento concluído! {len(municipios)} ofícios gerados.")
+        
+        if logs:
+            with st.expander("⚠️ Alertas de Formatação"):
+                for log in logs: st.write(log)
+
+        st.download_button("⬇️ Baixar ZIP (Nomes Atualizados)", zip_buffer.getvalue(), 
+                           file_name=f"Oficios_SaldoDivida_{datetime.now().strftime('%H%M')}.zip", 
                            mime="application/zip")
 
     except Exception as e:
