@@ -20,18 +20,15 @@ def gerar_modelo_csv():
         'Município': ['Goiânia', 'Anápolis', 'Aparecida de Goiânia'],
         'Responsável': ['Nome do Prefeito 1', 'Nome do Prefeito 2', 'Nome do Prefeito 3']
     }
-    df = pd.read_json(pd.DataFrame(data).to_json()) # Truque para garantir tipos
-    # Gera CSV separado por ponto e vírgula (Padrão Excel Brasil)
+    df = pd.read_json(pd.DataFrame(data).to_json()) 
     return df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
 
 def carregar_dicionario_responsaveis(arquivo_upload):
     """
-    Lê o arquivo de responsáveis (CSV ou Excel) e retorna um dicionário:
-    { 'MUNICÍPIO': 'NOME DO RESPONSÁVEL' }
+    Lê o arquivo de responsáveis e retorna { 'MUNICÍPIO': 'NOME' }
     """
     try:
         if arquivo_upload.name.endswith('.csv'):
-            # Tenta ler com separador ; (comum no Brasil) e depois ,
             try:
                 df = pd.read_csv(arquivo_upload, sep=';', encoding='utf-8-sig')
             except:
@@ -40,18 +37,15 @@ def carregar_dicionario_responsaveis(arquivo_upload):
         else:
             df = pd.read_excel(arquivo_upload)
 
-        # Padronização de colunas (Remove acentos e espaços para achar as colunas)
         df.columns = df.columns.str.strip().str.lower()
         
-        # Procura colunas chaves
         col_muni = next((c for c in df.columns if 'munic' in c or 'cidade' in c), None)
         col_resp = next((c for c in df.columns if 'respons' in c or 'nome' in c or 'prefeito' in c), None)
 
         if not col_muni or not col_resp:
-            st.error("Erro na Planilha de Responsáveis: Não encontrei as colunas 'Município' e 'Responsável'. Baixe o modelo para ver o formato correto.")
+            st.error("Erro na Planilha de Responsáveis: Colunas 'Município' ou 'Responsável' não identificadas.")
             return {}
 
-        # Cria o dicionário { CIDADE: NOME }
         dic_resp = {}
         for _, row in df.iterrows():
             cidade = str(row[col_muni]).strip().upper()
@@ -86,11 +80,40 @@ def replace_everywhere(doc: Document, old: str, new: str) -> None:
             if h:
                 for p in h.paragraphs: repl(p)
 
+def formatar_valor(val):
+    if isinstance(val, (int, float)):
+        return f"{val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return str(val)
+
+def adicionar_linha_tabela(table, orgao, processo, valor, is_placeholder=False):
+    row_cells = table.add_row().cells
+    row_cells[0].text = orgao
+    row_cells[1].text = processo
+    row_cells[2].text = valor
+    
+    for i, cell in enumerate(row_cells):
+        cell.vertical_alignment = 1 # Center
+        for p in cell.paragraphs:
+            # Formatação de Alinhamento
+            if is_placeholder:
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            else:
+                if i == 2: # Valor
+                    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                elif i == 1: # Processo
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                else: # Órgão
+                    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            
+            if p.runs: p.runs[0].font.size = Pt(10)
+            else: p.add_run().font.size = Pt(10)
+
 def preencher_tabela(table, df_municipio):
     table.style = 'Table Grid'
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False 
 
+    # Cabeçalho
     hdr_cells = table.rows[0].cells
     titulos = ['Órgão', 'Processo / Documento', 'Saldo em 31/12/2025']
     for i, titulo in enumerate(titulos):
@@ -102,29 +125,30 @@ def preencher_tabela(table, df_municipio):
                 run.font.size = Pt(10)
             if not p.runs: p.add_run(titulo).font.bold = True
 
-    for index, row in df_municipio.iterrows():
-        row_cells = table.add_row().cells
-        
-        orgao = "Receita Federal do Brasil"
-        if "PGFN" in str(row.get('Sistema', '')): orgao = "Procuradoria da Fazenda Nacional"
-            
-        processo = str(row['Processo'])
-        val = row['Valor Original']
-        
-        if isinstance(val, (int, float)):
-            valor_str = f"{val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        else:
-            valor_str = str(val)
+    # Separação RFB e PGFN
+    # Cria uma cópia para não alterar o original e converte sistema para string
+    df_work = df_municipio.copy()
+    df_work['Sistema'] = df_work['Sistema'].fillna('').astype(str)
+    
+    # Filtra PGFN (se tiver "PGFN" no nome do sistema) e RFB (o resto)
+    df_pgfn = df_work[df_work['Sistema'].str.contains("PGFN", case=False)]
+    df_rfb = df_work[~df_work['Sistema'].str.contains("PGFN", case=False)]
 
-        row_cells[0].text = orgao
-        row_cells[1].text = processo
-        row_cells[2].text = valor_str
-        
-        for cell in row_cells:
-            cell.vertical_alignment = 1
-            for p in cell.paragraphs:
-                if p.runs: p.runs[0].font.size = Pt(10)
-                else: p.add_run().font.size = Pt(10)
+    # --- 1. INSERE DADOS RFB ---
+    if not df_rfb.empty:
+        for _, row in df_rfb.iterrows():
+            adicionar_linha_tabela(table, "Receita Federal do Brasil", str(row['Processo']), formatar_valor(row['Valor Original']))
+    else:
+        # Linha Vazia RFB
+        adicionar_linha_tabela(table, "Receita Federal do Brasil", "-", "-", is_placeholder=True)
+
+    # --- 2. INSERE DADOS PGFN ---
+    if not df_pgfn.empty:
+        for _, row in df_pgfn.iterrows():
+            adicionar_linha_tabela(table, "Procuradoria da Fazenda Nacional", str(row['Processo']), formatar_valor(row['Valor Original']))
+    else:
+        # Linha Vazia PGFN
+        adicionar_linha_tabela(table, "Procuradoria da Fazenda Nacional", "-", "-", is_placeholder=True)
 
 def inserir_tabela_no_placeholder(doc, df_municipio, placeholder="{{TABELA}}"):
     for paragraph in doc.paragraphs:
@@ -140,9 +164,8 @@ def inserir_tabela_no_placeholder(doc, df_municipio, placeholder="{{TABELA}}"):
 st.title("Gerador de Ofícios - Saldo Dívida RFB")
 st.markdown("Preencha os dados abaixo para gerar os documentos.")
 
-# Container de Download do Modelo
 with st.container():
-    st.info("💡 **Dica:** Baixe o modelo da lista de responsáveis para preencher corretamente.")
+    st.info("💡 **Dica:** O modelo de responsáveis ajuda a preencher os nomes dos prefeitos automaticamente.")
     csv_modelo = gerar_modelo_csv()
     st.download_button(
         label="📥 Baixar Modelo de Lista de Responsáveis (CSV)",
@@ -167,16 +190,17 @@ ano_doc = st.sidebar.number_input("Ano", value=2026)
 
 # ================= 4. PROCESSAMENTO =================
 if st.button("🚀 Gerar Arquivos (ZIP)"):
-    # Validações
     if not uploaded_excel:
         st.error("Faltou a Planilha de Dívidas!")
         st.stop()
     if not uploaded_template:
         st.error("Faltou o Modelo Word!")
         st.stop()
-    if not uploaded_responsaveis:
-        st.error("Faltou a Lista de Responsáveis!")
-        st.stop()
+    
+    # Carrega responsáveis se houver, senão usa dicionário vazio
+    db_responsaveis = {}
+    if uploaded_responsaveis:
+        db_responsaveis = carregar_dicionario_responsaveis(uploaded_responsaveis)
 
     try:
         # 1. Carrega Dados da Dívida
@@ -185,12 +209,6 @@ if st.button("🚀 Gerar Arquivos (ZIP)"):
         col_municipio = 'Município' if 'Município' in df.columns else df.columns[0]
         df[col_municipio] = df[col_municipio].astype(str).str.strip()
         municipios = sorted(df[col_municipio].unique())
-
-        # 2. Carrega Dados dos Responsáveis (Dinâmico)
-        db_responsaveis = carregar_dicionario_responsaveis(uploaded_responsaveis)
-        
-        if not db_responsaveis:
-            st.stop() # Parar se houve erro na leitura dos responsáveis
 
         # 3. Preparação
         zip_buffer = io.BytesIO()
@@ -218,14 +236,16 @@ if st.button("🚀 Gerar Arquivos (ZIP)"):
                         if len(parts) > 0 and len(parts[0].strip()) == 2: uf = parts[0].strip()
                     except: pass
                 
-                # --- Busca Responsável no Arquivo Uploaded ---
-                nome_pref = db_responsaveis.get(muni.upper(), "RESPONSÁVEL NÃO ENCONTRADO")
-                if nome_pref == "RESPONSÁVEL NÃO ENCONTRADO":
-                    logs.append(f"⚠️ {muni}: Responsável não encontrado na lista enviada.")
+                # --- Busca Responsável ---
+                # Se não enviou lista, coloca placeholder genérico
+                nome_pref = "PREFEITO(A) MUNICIPAL"
+                if db_responsaveis:
+                    nome_pref = db_responsaveis.get(muni.upper(), "PREFEITO(A) MUNICIPAL")
+                    if nome_pref == "PREFEITO(A) MUNICIPAL":
+                        logs.append(f"⚠️ {muni}: Responsável não encontrado na lista.")
 
                 num_fmt = f"{contador:03d}/{ano_doc}"
                 
-                # Substituições
                 replaces = {
                     "{{MUNICIPIO}}": muni.upper(),
                     "{{UF}}": uf,
@@ -243,7 +263,7 @@ if st.button("🚀 Gerar Arquivos (ZIP)"):
                     sucesso = inserir_tabela_no_placeholder(doc, df_muni, "{{TABELA_DEBITOS}}")
                 
                 if not sucesso:
-                    logs.append(f"⚠️ {muni}: Placeholder {{TABELA}} não encontrado no Word.")
+                    logs.append(f"⚠️ {muni}: Placeholder {{TABELA}} não encontrado.")
                     table_fallback = doc.add_table(rows=1, cols=3)
                     preencher_tabela(table_fallback, df_muni)
 
@@ -251,7 +271,6 @@ if st.button("🚀 Gerar Arquivos (ZIP)"):
                 doc_io = io.BytesIO()
                 doc.save(doc_io)
                 
-                # Nome do arquivo com UF + Saldo Divida RFB-PGFN
                 nome_zip = f"{contador:03d}-{ano_doc} - {uf} - {muni} - Saldo Divida RFB-PGFN.docx"
                 zf.writestr(nome_zip, doc_io.getvalue())
                 
