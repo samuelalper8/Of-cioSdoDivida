@@ -264,7 +264,7 @@ def inserir_tabela_no_placeholder(doc, df_rfb, lista_pgfn, placeholder="{{TABELA
     return False
 
 # ================= 4. INTERFACE =================
-st.title("Gerador de Ofícios 5.1 (Correção Total)")
+st.title("Gerador de Ofícios 6.0 (Tudo em Um)")
 
 with st.expander("📂 Baixar Modelos"):
     c1, c2 = st.columns(2)
@@ -284,7 +284,7 @@ num_inicial = st.sidebar.number_input("Nº Inicial", value=46)
 ano_doc = st.sidebar.number_input("Ano", value=2026)
 
 # ================= 5. PROCESSAMENTO =================
-if st.button("🚀 Gerar Arquivos"):
+if st.button("🚀 Gerar Arquivo Único (Todas UFs)"):
     if not uploaded_template:
         st.error("Modelo Word é obrigatório.")
         st.stop()
@@ -299,13 +299,12 @@ if st.button("🚀 Gerar Arquivos"):
         df_rfb = pd.DataFrame()
         if uploaded_excel:
             df_rfb = pd.read_excel(uploaded_excel, engine='openpyxl')
-            # CORREÇÃO CRÍTICA: NÃO DROPAR PROCESSOS VAZIOS AQUI
-            # df_rfb = df_rfb.dropna(subset=['Processo']) <- REMOVIDO
             
+            # ATENÇÃO: NÃO DROPAR LINHAS SEM PROCESSO PARA GARANTIR CIDADES COM VALORES SEM PROCESSO
             col_muni = 'Município' if 'Município' in df_rfb.columns else df_rfb.columns[0]
             col_arq = 'Arquivo' if 'Arquivo' in df_rfb.columns else None
             
-            # Remove linhas onde MUNICÍPIO é vazio (Totalizadores inválidos)
+            # Remove apenas se o NOME DO MUNICÍPIO for inválido
             df_rfb = df_rfb.dropna(subset=[col_muni])
             
             df_rfb[col_muni] = df_rfb[col_muni].astype(str).str.strip()
@@ -341,14 +340,14 @@ if st.button("🚀 Gerar Arquivos"):
         contador = num_inicial
         logs = []
         
-        st.write("---")
-        st.subheader("⬇️ Downloads Disponíveis")
-
-        for uf in ufs_ordenadas:
-            lista_alvo = sorted(munis_por_uf[uf], key=lambda x: x['Nome'])
+        # --- CRIAÇÃO DO ZIP MESTRE (ARQUIVÃO) ---
+        zip_buffer = io.BytesIO()
+        
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
             
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for uf in ufs_ordenadas:
+                lista_alvo = sorted(munis_por_uf[uf], key=lambda x: x['Nome'])
+                
                 for item in lista_alvo:
                     key = item['Key']
                     nome_display = item['Nome']
@@ -381,23 +380,24 @@ if st.button("🚀 Gerar Arquivos"):
 
                     doc_io = io.BytesIO()
                     doc.save(doc_io)
-                    fname = f"{contador:03d}-{ano_doc} - {uf} - {nome_display} - Saldo Divida RFB-PGFN.docx"
+                    
+                    # SALVA COM PASTA DA UF: ex: "GO/046-2026 - GO - Cidade.docx"
+                    fname = f"{uf}/{contador:03d}-{ano_doc} - {uf} - {nome_display} - Saldo Divida RFB-PGFN.docx"
                     zf.writestr(fname, doc_io.getvalue())
                     
                     contador += 1
             
-            st.download_button(
-                f"📦 Baixar Ofícios - {uf} ({len(lista_alvo)} un.)",
-                zip_buffer.getvalue(),
-                f"Oficios_{uf}_{datetime.now().strftime('%H%M')}.zip",
-                "application/zip",
-                key=f"btn_{uf}"
-            )
-
         st.success(f"✅ Processo Finalizado! Total de {contador - num_inicial} documentos.")
         if logs:
             with st.expander("Alertas"):
                 for l in logs: st.write(l)
+
+        st.download_button(
+            label="⬇️ Baixar TODOS os Ofícios (Pacote Completo)",
+            data=zip_buffer.getvalue(),
+            file_name=f"Oficios_Completos_{datetime.now().strftime('%H%M')}.zip",
+            mime="application/zip"
+        )
 
     except Exception as e:
         st.error(f"Erro Crítico: {e}")
