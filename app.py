@@ -24,7 +24,7 @@ def remove_accents(input_str):
 def normalize_key_nospace(text):
     if pd.isna(text): return ""
     text = remove_accents(str(text)).upper().strip()
-    prefixes = ["MUNICIPIO DE ", "PREFEITURA DE ", "PREFEITURA MUNICIPAL DE ", "CAMARA MUNICIPAL DE "]
+    prefixes = ["MUNICIPIO DE ", "PREFEITURA DE ", "PREFEITURA MUNICIPAL DE ", "CAMARA MUNICIPAL DE ", "FUNDO MUNICIPAL DE "]
     for p in prefixes:
         if text.startswith(p): text = text[len(p):]
     return text.replace(" ", "").replace("_", "").replace("-", "")
@@ -32,7 +32,7 @@ def normalize_key_nospace(text):
 def normalize_key_standard(text):
     if pd.isna(text): return ""
     text = remove_accents(str(text)).upper().strip()
-    prefixes = ["MUNICIPIO DE ", "PREFEITURA DE ", "PREFEITURA MUNICIPAL DE "]
+    prefixes = ["MUNICIPIO DE ", "PREFEITURA DE ", "PREFEITURA MUNICIPAL DE ", "FUNDO MUNICIPAL DE "]
     for p in prefixes:
         if text.startswith(p): text = text[len(p):].strip()
     return text
@@ -65,7 +65,11 @@ def gerar_modelo_pgfn():
     return pd.DataFrame(data).to_csv(index=False, sep=',', encoding='utf-8-sig').encode('utf-8-sig')
 
 def carregar_responsaveis(arquivo):
+    """
+    Carrega a lista de responsáveis com detecção flexível de colunas.
+    """
     try:
+        # Tenta ler CSV com ; ou ,
         if arquivo.name.endswith('.csv'):
             try: df = pd.read_csv(arquivo, sep=';', encoding='utf-8-sig')
             except: 
@@ -74,18 +78,33 @@ def carregar_responsaveis(arquivo):
         else:
             df = pd.read_excel(arquivo)
         
+        # Normaliza nomes das colunas para busca
         df.columns = [remove_accents(c).strip().lower() for c in df.columns]
-        col_muni = next((c for c in df.columns if 'municipio' in c or 'cidade' in c), None)
-        col_resp = next((c for c in df.columns if 'responsavel' in c or 'nome' in c), None)
+        
+        # Palavras-chave para identificar as colunas
+        keys_muni = ['municipio', 'cidade', 'orgao', 'entidade', 'unidade']
+        keys_resp = ['responsavel', 'nome', 'prefeito', 'gestor', 'administrador']
+        
+        col_muni = next((c for c in df.columns if any(k in c for k in keys_muni)), None)
+        col_resp = next((c for c in df.columns if any(k in c for k in keys_resp)), None)
+        
+        if not col_muni or not col_resp:
+            st.error(f"⚠️ Erro na Planilha de Responsáveis: Não identifiquei as colunas. Colunas encontradas: {list(df.columns)}")
+            return {}
         
         dic = {}
-        if col_muni and col_resp:
-            for _, row in df.iterrows():
-                key = normalize_key_standard(row[col_muni])
-                dic[key] = str(row[col_resp]).strip()
-                dic[normalize_key_nospace(row[col_muni])] = str(row[col_resp]).strip()
+        for _, row in df.iterrows():
+            val_muni = str(row[col_muni])
+            val_resp = str(row[col_resp]).strip()
+            
+            # Cria chaves normalizadas
+            dic[normalize_key_standard(val_muni)] = val_resp
+            dic[normalize_key_nospace(val_muni)] = val_resp
+            
         return dic
-    except: return {}
+    except Exception as e:
+        st.error(f"Erro ao processar responsáveis: {e}")
+        return {}
 
 def carregar_pgfn_csv(arquivo):
     try:
@@ -134,12 +153,18 @@ def carregar_pgfn_csv(arquivo):
         return {}, {}
 
 def buscar_responsavel(muni_display, key_nospace, db_resp):
+    # 1. Busca exata pela chave sem espaços
     if key_nospace in db_resp: return db_resp[key_nospace]
+    
+    # 2. Busca pelo nome normalizado
     norm_std = normalize_key_standard(muni_display)
     if norm_std in db_resp: return db_resp[norm_std]
+    
+    # 3. Busca aproximada (Startswith)
     for k in db_resp:
         if k.startswith(norm_std) or norm_std.startswith(k):
             return db_resp[k]
+            
     return "PREFEITO(A) MUNICIPAL"
 
 # ================= 3. MANIPULAÇÃO WORD =================
@@ -168,19 +193,16 @@ def formatar_valor(val):
 def adicionar_linha_tabela(table, orgao, modalidade, processo, valor, is_placeholder=False):
     row_cells = table.add_row().cells
     
-    # --- Coluna 1: Órgão ---
     p1 = row_cells[0].paragraphs[0]
     p1.alignment = WD_ALIGN_PARAGRAPH.LEFT
     p1.add_run(orgao)
     
-    # Adiciona (nada consta) ou (Modalidade)
     if is_placeholder:
         run_nc = p1.add_run("\n(nada consta)")
         run_nc.font.size = Pt(8)
     elif modalidade and modalidade.lower() != 'nan':
         p1.add_run(f"\n({modalidade})").font.size = Pt(8)
 
-    # --- Coluna 2: Processo ---
     p2 = row_cells[1].paragraphs[0]
     p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
     if processo and processo.lower() != 'nan':
@@ -188,12 +210,10 @@ def adicionar_linha_tabela(table, orgao, modalidade, processo, valor, is_placeho
     else:
         p2.add_run("-")
 
-    # --- Coluna 3: Valor ---
     p3 = row_cells[2].paragraphs[0]
     p3.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p3.add_run(valor)
 
-    # Ajuste geral de fonte (mantendo 10, exceto os de 8)
     for cell in row_cells:
         cell.vertical_alignment = 1
         for p in cell.paragraphs:
@@ -260,7 +280,7 @@ def inserir_tabela_no_placeholder(doc, df_rfb, lista_pgfn, placeholder="{{TABELA
     return False
 
 # ================= 4. INTERFACE =================
-st.title("Gerador de Ofícios 7.1 (Município + UF)")
+st.title("Gerador de Ofícios 8.0 (Detecção de Colunas)")
 
 with st.expander("📂 Baixar Modelos"):
     c1, c2 = st.columns(2)
@@ -291,16 +311,16 @@ if st.button("🚀 Gerar Arquivos"):
     db_resp = carregar_responsaveis(uploaded_resp) if uploaded_resp else {}
     dados_pgfn, meta_pgfn = carregar_pgfn_csv(uploaded_pgfn) if uploaded_pgfn else ({}, {})
     
+    if uploaded_resp and not db_resp:
+        st.warning("⚠️ O arquivo de responsáveis foi enviado, mas não conseguimos ler os nomes. Verifique as colunas.")
+
     try:
         df_rfb = pd.DataFrame()
         if uploaded_excel:
             df_rfb = pd.read_excel(uploaded_excel, engine='openpyxl')
-            
             col_muni = 'Município' if 'Município' in df_rfb.columns else df_rfb.columns[0]
             col_arq = 'Arquivo' if 'Arquivo' in df_rfb.columns else None
-            
             df_rfb = df_rfb.dropna(subset=[col_muni])
-            
             df_rfb[col_muni] = df_rfb[col_muni].astype(str).str.strip()
             df_rfb['Key'] = df_rfb[col_muni].apply(normalize_key_nospace)
             
@@ -331,7 +351,6 @@ if st.button("🚀 Gerar Arquivos"):
         contador = num_inicial
         logs = []
         
-        # --- DATA ATUAL (FUSO BRASIL) ---
         hoje = datetime.now() - timedelta(hours=3)
         meses = {1:"janeiro", 2:"fevereiro", 3:"março", 4:"abril", 5:"maio", 6:"junho",
                  7:"julho", 8:"agosto", 9:"setembro", 10:"outubro", 11:"novembro", 12:"dezembro"}
@@ -355,7 +374,6 @@ if st.button("🚀 Gerar Arquivos"):
                     doc = Document(uploaded_template)
                     
                     replaces = {
-                        # AQUI ESTÁ A ALTERAÇÃO: Nome do município agora inclui a UF
                         "{{MUNICIPIO}}": f"{nome_display.upper()} – {uf}", 
                         "{{UF}}": uf,
                         "{{PREFEITO}}": nome_pref.upper(),
@@ -376,7 +394,7 @@ if st.button("🚀 Gerar Arquivos"):
             
         st.success(f"✅ Processo Finalizado! {contador - num_inicial} ofícios gerados.")
         if logs:
-            with st.expander("Alertas"):
+            with st.expander("Alertas de Processamento"):
                 for l in logs: st.write(l)
 
         st.download_button(
