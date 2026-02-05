@@ -7,7 +7,7 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 import io
 import zipfile
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import unicodedata
 import re
 
@@ -22,9 +22,6 @@ def remove_accents(input_str):
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
 
 def normalize_key_nospace(text):
-    """
-    Normaliza removendo espaços para dar match entre fontes diferentes.
-    """
     if pd.isna(text): return ""
     text = remove_accents(str(text)).upper().strip()
     prefixes = ["MUNICIPIO DE ", "PREFEITURA DE ", "PREFEITURA MUNICIPAL DE ", "CAMARA MUNICIPAL DE "]
@@ -33,7 +30,6 @@ def normalize_key_nospace(text):
     return text.replace(" ", "").replace("_", "").replace("-", "")
 
 def normalize_key_standard(text):
-    """Normalização para busca de responsáveis (mantém estrutura básica)."""
     if pd.isna(text): return ""
     text = remove_accents(str(text)).upper().strip()
     prefixes = ["MUNICIPIO DE ", "PREFEITURA DE ", "PREFEITURA MUNICIPAL DE "]
@@ -42,14 +38,11 @@ def normalize_key_standard(text):
     return text
 
 def format_camel_case(text):
-    """Tenta separar nomes grudados ex: 'BarroAlto' -> 'Barro Alto'."""
     if not text: return ""
     if " " in text: return text
-    # Insere espaço antes de maiúsculas
     return re.sub(r'(?<!^)(?=[A-Z])', ' ', text)
 
 def extrair_uf_filename(nome_arquivo):
-    """Extrai UF do nome do arquivo (GO_Cidade...)."""
     if not isinstance(nome_arquivo, str): return "GO"
     parts = nome_arquivo.replace(" ", "_").split('_')
     ufs = {'AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'}
@@ -217,22 +210,13 @@ def preencher_tabela(table, df_rfb, lista_pgfn):
     # RFB
     if not df_rfb.empty:
         df_clean = df_rfb[~df_rfb['Sistema'].astype(str).str.contains("PGFN", case=False, na=False)]
-        
-        # Filtra linhas vazias (Onde Modalidade e Processo são NaN ou 0)
-        # Mas mantém se tiver Valor Original
         df_validas = df_clean.dropna(subset=['Valor Original'])
-        
         if not df_validas.empty:
             for _, row in df_validas.iterrows():
-                # Ignora linhas com valor 0 e sem processo (linhas de total ou lixo)
-                if row['Valor Original'] == 0 and pd.isna(row['Processo']):
-                    continue
-                    
+                if row['Valor Original'] == 0 and pd.isna(row['Processo']): continue
                 mod = str(row['Modalidade']) if pd.notna(row['Modalidade']) else ""
                 proc = str(row['Processo']) if pd.notna(row['Processo']) else "-"
-                val = formatar_valor(row['Valor Original'])
-                
-                adicionar_linha_tabela(table, "Receita Federal do Brasil", mod, proc, val)
+                adicionar_linha_tabela(table, "Receita Federal do Brasil", mod, proc, formatar_valor(row['Valor Original']))
         else:
             adicionar_linha_tabela(table, "Receita Federal do Brasil", "", "-", "-", True)
     else:
@@ -243,7 +227,6 @@ def preencher_tabela(table, df_rfb, lista_pgfn):
         for item in lista_pgfn:
             adicionar_linha_tabela(table, "Procuradoria Geral da Fazenda Nacional", item['Modalidade'], item['Processo'], formatar_valor(item['Valor Original']))
     else:
-        # Fallback PGFN no Excel
         df_pgfn_ex = df_rfb[df_rfb['Sistema'].astype(str).str.contains("PGFN", case=False, na=False)] if not df_rfb.empty else pd.DataFrame()
         if not df_pgfn_ex.empty:
              for _, row in df_pgfn_ex.iterrows():
@@ -264,7 +247,7 @@ def inserir_tabela_no_placeholder(doc, df_rfb, lista_pgfn, placeholder="{{TABELA
     return False
 
 # ================= 4. INTERFACE =================
-st.title("Gerador de Ofícios 6.0 (Tudo em Um)")
+st.title("Gerador de Ofícios 6.1 (Data Ajustada)")
 
 with st.expander("📂 Baixar Modelos"):
     c1, c2 = st.columns(2)
@@ -284,7 +267,7 @@ num_inicial = st.sidebar.number_input("Nº Inicial", value=46)
 ano_doc = st.sidebar.number_input("Ano", value=2026)
 
 # ================= 5. PROCESSAMENTO =================
-if st.button("🚀 Gerar Arquivo Único (Todas UFs)"):
+if st.button("🚀 Gerar Arquivos"):
     if not uploaded_template:
         st.error("Modelo Word é obrigatório.")
         st.stop()
@@ -299,14 +282,9 @@ if st.button("🚀 Gerar Arquivo Único (Todas UFs)"):
         df_rfb = pd.DataFrame()
         if uploaded_excel:
             df_rfb = pd.read_excel(uploaded_excel, engine='openpyxl')
-            
-            # ATENÇÃO: NÃO DROPAR LINHAS SEM PROCESSO PARA GARANTIR CIDADES COM VALORES SEM PROCESSO
             col_muni = 'Município' if 'Município' in df_rfb.columns else df_rfb.columns[0]
             col_arq = 'Arquivo' if 'Arquivo' in df_rfb.columns else None
-            
-            # Remove apenas se o NOME DO MUNICÍPIO for inválido
             df_rfb = df_rfb.dropna(subset=[col_muni])
-            
             df_rfb[col_muni] = df_rfb[col_muni].astype(str).str.strip()
             df_rfb['Key'] = df_rfb[col_muni].apply(normalize_key_nospace)
             
@@ -316,15 +294,12 @@ if st.button("🚀 Gerar Arquivo Único (Todas UFs)"):
             df_rfb['UF_Ref'] = df_rfb.apply(get_uf_rfb, axis=1)
 
         mestre_munis = {}
-        
-        # Merge RFB
         if not df_rfb.empty:
             for _, row in df_rfb.iterrows():
                 k = row['Key']
                 if k not in mestre_munis:
                     mestre_munis[k] = {'Nome': row[col_muni], 'UF': row['UF_Ref']}
         
-        # Merge PGFN
         for k, meta in meta_pgfn.items():
             if k not in mestre_munis:
                 nome_formatado = format_camel_case(meta['Nome'])
@@ -340,14 +315,16 @@ if st.button("🚀 Gerar Arquivo Único (Todas UFs)"):
         contador = num_inicial
         logs = []
         
-        # --- CRIAÇÃO DO ZIP MESTRE (ARQUIVÃO) ---
-        zip_buffer = io.BytesIO()
+        # --- DATA ATUAL (FUSO BRASIL) ---
+        # Ajusta para UTC-3 para garantir a data correta no Brasil
+        hoje = datetime.now() - timedelta(hours=3)
+        meses = {1:"janeiro", 2:"fevereiro", 3:"março", 4:"abril", 5:"maio", 6:"junho",
+                 7:"julho", 8:"agosto", 9:"setembro", 10:"outubro", 11:"novembro", 12:"dezembro"}
         
+        zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            
             for uf in ufs_ordenadas:
                 lista_alvo = sorted(munis_por_uf[uf], key=lambda x: x['Nome'])
-                
                 for item in lista_alvo:
                     key = item['Key']
                     nome_display = item['Nome']
@@ -361,10 +338,6 @@ if st.button("🚀 Gerar Arquivo Único (Todas UFs)"):
 
                     uploaded_template.seek(0)
                     doc = Document(uploaded_template)
-                    
-                    hoje = datetime.now()
-                    meses = {1:"janeiro", 2:"fevereiro", 3:"março", 4:"abril", 5:"maio", 6:"junho",
-                             7:"julho", 8:"agosto", 9:"setembro", 10:"outubro", 11:"novembro", 12:"dezembro"}
                     
                     replaces = {
                         "{{MUNICIPIO}}": nome_display.upper(),
@@ -380,14 +353,12 @@ if st.button("🚀 Gerar Arquivo Único (Todas UFs)"):
 
                     doc_io = io.BytesIO()
                     doc.save(doc_io)
-                    
-                    # SALVA COM PASTA DA UF: ex: "GO/046-2026 - GO - Cidade.docx"
                     fname = f"{uf}/{contador:03d}-{ano_doc} - {uf} - {nome_display} - Saldo Divida RFB-PGFN.docx"
                     zf.writestr(fname, doc_io.getvalue())
                     
                     contador += 1
             
-        st.success(f"✅ Processo Finalizado! Total de {contador - num_inicial} documentos.")
+        st.success(f"✅ Processo Finalizado! {contador - num_inicial} ofícios gerados para a data de hoje.")
         if logs:
             with st.expander("Alertas"):
                 for l in logs: st.write(l)
@@ -395,7 +366,7 @@ if st.button("🚀 Gerar Arquivo Único (Todas UFs)"):
         st.download_button(
             label="⬇️ Baixar TODOS os Ofícios (Pacote Completo)",
             data=zip_buffer.getvalue(),
-            file_name=f"Oficios_Completos_{datetime.now().strftime('%H%M')}.zip",
+            file_name=f"Oficios_Completos_{hoje.strftime('%Y%m%d')}.zip",
             mime="application/zip"
         )
 
