@@ -168,12 +168,19 @@ def formatar_valor(val):
 def adicionar_linha_tabela(table, orgao, modalidade, processo, valor, is_placeholder=False):
     row_cells = table.add_row().cells
     
+    # --- Coluna 1: Órgão ---
     p1 = row_cells[0].paragraphs[0]
     p1.alignment = WD_ALIGN_PARAGRAPH.LEFT
     p1.add_run(orgao)
-    if modalidade and not is_placeholder and modalidade.lower() != 'nan':
+    
+    # Adiciona (nada consta) ou (Modalidade)
+    if is_placeholder:
+        run_nc = p1.add_run("\n(nada consta)")
+        run_nc.font.size = Pt(8)
+    elif modalidade and modalidade.lower() != 'nan':
         p1.add_run(f"\n({modalidade})").font.size = Pt(8)
 
+    # --- Coluna 2: Processo ---
     p2 = row_cells[1].paragraphs[0]
     p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
     if processo and processo.lower() != 'nan':
@@ -181,10 +188,12 @@ def adicionar_linha_tabela(table, orgao, modalidade, processo, valor, is_placeho
     else:
         p2.add_run("-")
 
+    # --- Coluna 3: Valor ---
     p3 = row_cells[2].paragraphs[0]
     p3.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p3.add_run(valor)
 
+    # Ajuste geral de fonte (mantendo 10, exceto os de 8)
     for cell in row_cells:
         cell.vertical_alignment = 1
         for p in cell.paragraphs:
@@ -211,16 +220,20 @@ def preencher_tabela(table, df_rfb, lista_pgfn):
     if not df_rfb.empty:
         df_clean = df_rfb[~df_rfb['Sistema'].astype(str).str.contains("PGFN", case=False, na=False)]
         df_validas = df_clean.dropna(subset=['Valor Original'])
+        
+        has_valid_row = False
         if not df_validas.empty:
             for _, row in df_validas.iterrows():
                 if row['Valor Original'] == 0 and pd.isna(row['Processo']): continue
+                has_valid_row = True
                 mod = str(row['Modalidade']) if pd.notna(row['Modalidade']) else ""
                 proc = str(row['Processo']) if pd.notna(row['Processo']) else "-"
                 adicionar_linha_tabela(table, "Receita Federal do Brasil", mod, proc, formatar_valor(row['Valor Original']))
-        else:
-            adicionar_linha_tabela(table, "Receita Federal do Brasil", "", "-", "-", True)
+        
+        if not has_valid_row:
+            adicionar_linha_tabela(table, "Receita Federal do Brasil", "", "-", "-", is_placeholder=True)
     else:
-        adicionar_linha_tabela(table, "Receita Federal do Brasil", "", "-", "-", True)
+        adicionar_linha_tabela(table, "Receita Federal do Brasil", "", "-", "-", is_placeholder=True)
 
     # PGFN
     if lista_pgfn:
@@ -234,7 +247,7 @@ def preencher_tabela(table, df_rfb, lista_pgfn):
                 proc = str(row['Processo']) if pd.notna(row['Processo']) else "-"
                 adicionar_linha_tabela(table, "Procuradoria Geral da Fazenda Nacional", mod, proc, formatar_valor(row['Valor Original']))
         else:
-            adicionar_linha_tabela(table, "Procuradoria Geral da Fazenda Nacional", "", "-", "-", True)
+            adicionar_linha_tabela(table, "Procuradoria Geral da Fazenda Nacional", "", "-", "-", is_placeholder=True)
 
 def inserir_tabela_no_placeholder(doc, df_rfb, lista_pgfn, placeholder="{{TABELA}}"):
     for paragraph in doc.paragraphs:
@@ -247,7 +260,7 @@ def inserir_tabela_no_placeholder(doc, df_rfb, lista_pgfn, placeholder="{{TABELA
     return False
 
 # ================= 4. INTERFACE =================
-st.title("Gerador de Ofícios 6.1 (Data Ajustada)")
+st.title("Gerador de Ofícios 7.1 (Município + UF)")
 
 with st.expander("📂 Baixar Modelos"):
     c1, c2 = st.columns(2)
@@ -282,9 +295,12 @@ if st.button("🚀 Gerar Arquivos"):
         df_rfb = pd.DataFrame()
         if uploaded_excel:
             df_rfb = pd.read_excel(uploaded_excel, engine='openpyxl')
+            
             col_muni = 'Município' if 'Município' in df_rfb.columns else df_rfb.columns[0]
             col_arq = 'Arquivo' if 'Arquivo' in df_rfb.columns else None
+            
             df_rfb = df_rfb.dropna(subset=[col_muni])
+            
             df_rfb[col_muni] = df_rfb[col_muni].astype(str).str.strip()
             df_rfb['Key'] = df_rfb[col_muni].apply(normalize_key_nospace)
             
@@ -316,7 +332,6 @@ if st.button("🚀 Gerar Arquivos"):
         logs = []
         
         # --- DATA ATUAL (FUSO BRASIL) ---
-        # Ajusta para UTC-3 para garantir a data correta no Brasil
         hoje = datetime.now() - timedelta(hours=3)
         meses = {1:"janeiro", 2:"fevereiro", 3:"março", 4:"abril", 5:"maio", 6:"junho",
                  7:"julho", 8:"agosto", 9:"setembro", 10:"outubro", 11:"novembro", 12:"dezembro"}
@@ -340,7 +355,8 @@ if st.button("🚀 Gerar Arquivos"):
                     doc = Document(uploaded_template)
                     
                     replaces = {
-                        "{{MUNICIPIO}}": nome_display.upper(),
+                        # AQUI ESTÁ A ALTERAÇÃO: Nome do município agora inclui a UF
+                        "{{MUNICIPIO}}": f"{nome_display.upper()} – {uf}", 
                         "{{UF}}": uf,
                         "{{PREFEITO}}": nome_pref.upper(),
                         "{{NUM_OFICIO}}": f"{contador:03d}/{ano_doc}",
@@ -358,7 +374,7 @@ if st.button("🚀 Gerar Arquivos"):
                     
                     contador += 1
             
-        st.success(f"✅ Processo Finalizado! {contador - num_inicial} ofícios gerados para a data de hoje.")
+        st.success(f"✅ Processo Finalizado! {contador - num_inicial} ofícios gerados.")
         if logs:
             with st.expander("Alertas"):
                 for l in logs: st.write(l)
