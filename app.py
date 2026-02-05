@@ -66,10 +66,9 @@ def gerar_modelo_pgfn():
 
 def carregar_responsaveis(arquivo):
     """
-    Carrega a lista de responsáveis com detecção flexível de colunas.
+    Carrega a lista de responsáveis priorizando a coluna 'Nome Extraído'.
     """
     try:
-        # Tenta ler CSV com ; ou ,
         if arquivo.name.endswith('.csv'):
             try: df = pd.read_csv(arquivo, sep=';', encoding='utf-8-sig')
             except: 
@@ -78,18 +77,23 @@ def carregar_responsaveis(arquivo):
         else:
             df = pd.read_excel(arquivo)
         
-        # Normaliza nomes das colunas para busca
+        # Normaliza colunas
         df.columns = [remove_accents(c).strip().lower() for c in df.columns]
         
-        # Palavras-chave para identificar as colunas
-        keys_muni = ['municipio', 'cidade', 'orgao', 'entidade', 'unidade']
-        keys_resp = ['responsavel', 'nome', 'prefeito', 'gestor', 'administrador']
+        # --- LÓGICA DE PRIORIDADE DE COLUNAS ---
         
-        col_muni = next((c for c in df.columns if any(k in c for k in keys_muni)), None)
-        col_resp = next((c for c in df.columns if any(k in c for k in keys_resp)), None)
+        # 1. Tenta achar especificamente "Nome Extraido" (Sua planilha V2)
+        col_resp = next((c for c in df.columns if 'nome extraido' in c), None)
+        
+        # 2. Se não achar, tenta "Responsável", "Prefeito" (Planilha V1)
+        if not col_resp:
+            col_resp = next((c for c in df.columns if any(k in c for k in ['responsavel', 'prefeito', 'gestor'])), None)
+            
+        # 3. Para cidade/órgão
+        col_muni = next((c for c in df.columns if any(k in c for k in ['orgao', 'entidade', 'municipio', 'cidade'])), None)
         
         if not col_muni or not col_resp:
-            st.error(f"⚠️ Erro na Planilha de Responsáveis: Não identifiquei as colunas. Colunas encontradas: {list(df.columns)}")
+            st.error(f"⚠️ Não foi possível identificar as colunas na lista de responsáveis. Colunas lidas: {list(df.columns)}")
             return {}
         
         dic = {}
@@ -97,7 +101,8 @@ def carregar_responsaveis(arquivo):
             val_muni = str(row[col_muni])
             val_resp = str(row[col_resp]).strip()
             
-            # Cria chaves normalizadas
+            # Cria chaves normalizadas para facilitar o encontro
+            # Ex: "MUNICIPIO DE ALMAS" -> "ALMAS"
             dic[normalize_key_standard(val_muni)] = val_resp
             dic[normalize_key_nospace(val_muni)] = val_resp
             
@@ -160,7 +165,7 @@ def buscar_responsavel(muni_display, key_nospace, db_resp):
     norm_std = normalize_key_standard(muni_display)
     if norm_std in db_resp: return db_resp[norm_std]
     
-    # 3. Busca aproximada (Startswith)
+    # 3. Busca aproximada
     for k in db_resp:
         if k.startswith(norm_std) or norm_std.startswith(k):
             return db_resp[k]
@@ -280,7 +285,7 @@ def inserir_tabela_no_placeholder(doc, df_rfb, lista_pgfn, placeholder="{{TABELA
     return False
 
 # ================= 4. INTERFACE =================
-st.title("Gerador de Ofícios 8.0 (Detecção de Colunas)")
+st.title("Gerador de Ofícios 8.1 (Correção Responsável)")
 
 with st.expander("📂 Baixar Modelos"):
     c1, c2 = st.columns(2)
@@ -312,7 +317,7 @@ if st.button("🚀 Gerar Arquivos"):
     dados_pgfn, meta_pgfn = carregar_pgfn_csv(uploaded_pgfn) if uploaded_pgfn else ({}, {})
     
     if uploaded_resp and not db_resp:
-        st.warning("⚠️ O arquivo de responsáveis foi enviado, mas não conseguimos ler os nomes. Verifique as colunas.")
+        st.warning("⚠️ Planilha de responsáveis lida, mas nenhuma informação foi extraída. Verifique os títulos das colunas.")
 
     try:
         df_rfb = pd.DataFrame()
