@@ -9,6 +9,7 @@ import zipfile
 import os
 from datetime import datetime
 import unicodedata
+import re
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Gerador de Ofícios - ConPrev", layout="wide")
@@ -16,35 +17,53 @@ st.set_page_config(page_title="Gerador de Ofícios - ConPrev", layout="wide")
 # ================= 1. FUNÇÕES DE LIMPEZA E NORMALIZAÇÃO =================
 
 def remove_accents(input_str):
-    """Remove acentos (Á -> A, ç -> c)."""
     if not isinstance(input_str, str): return str(input_str)
     nfkd_form = unicodedata.normalize('NFKD', input_str)
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
 
 def normalize_key_nospace(text):
     """
-    Normaliza removendo espaços para dar match em nomes de arquivo.
-    Ex: 'BarroAlto' == 'BARRO ALTO' -> Ambos viram 'BARROALTO'
+    Normaliza removendo espaços para dar match entre fontes diferentes.
+    Ex: 'Barro Alto' e 'BarroAlto' viram 'BARROALTO'
     """
     if pd.isna(text): return ""
     text = remove_accents(str(text)).upper().strip()
-    # Remove prefixos comuns antes de tirar os espaços
-    prefixes = ["MUNICIPIO DE ", "PREFEITURA DE ", "PREFEITURA MUNICIPAL DE "]
+    prefixes = ["MUNICIPIO DE ", "PREFEITURA DE ", "PREFEITURA MUNICIPAL DE ", "CAMARA MUNICIPAL DE "]
     for p in prefixes:
-        if text.startswith(p):
-            text = text[len(p):]
-    # Remove espaços
-    return text.replace(" ", "").replace("_", "")
+        if text.startswith(p): text = text[len(p):]
+    return text.replace(" ", "").replace("_", "").replace("-", "")
 
 def normalize_key_standard(text):
-    """Normalização padrão para busca de responsáveis (com espaços)."""
+    """Normalização para busca de responsáveis (mantém estrutura básica)."""
     if pd.isna(text): return ""
     text = remove_accents(str(text)).upper().strip()
     prefixes = ["MUNICIPIO DE ", "PREFEITURA DE ", "PREFEITURA MUNICIPAL DE "]
     for p in prefixes:
-        if text.startswith(p):
-            text = text[len(p):].strip()
+        if text.startswith(p): text = text[len(p):].strip()
     return text
+
+def format_camel_case(text):
+    """Tenta separar nomes grudados ex: 'BarroAlto' -> 'Barro Alto'."""
+    if not text: return ""
+    # Se já tem espaço, retorna
+    if " " in text: return text
+    # Insere espaço antes de maiúsculas (exceto a primeira)
+    return re.sub(r'(?<!^)(?=[A-Z])', ' ', text)
+
+def extrair_uf_filename(nome_arquivo):
+    """Extrai UF do nome do arquivo (GO_Cidade...)."""
+    if not isinstance(nome_arquivo, str): return "GO"
+    parts = nome_arquivo.replace(" ", "_").split('_')
+    # Tenta achar siglas de UF
+    ufs = {'AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'}
+    for part in parts:
+        if part.upper() in ufs:
+            return part.upper()
+    # Tenta padrão XX-
+    parts_dash = nome_arquivo.split('-')
+    if len(parts_dash) > 0 and parts_dash[0].strip().upper() in ufs:
+        return parts_dash[0].strip().upper()
+    return "GO"
 
 # ================= 2. CARREGAMENTO DE DADOS =================
 
@@ -53,13 +72,7 @@ def gerar_modelo_responsaveis():
     return pd.DataFrame(data).to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
 
 def gerar_modelo_pgfn():
-    """Gera modelo do Extrato PGFN."""
-    data = {
-        'Arquivo': ['GO_CidadeExemplo_PGFN.pdf', 'TO_OutraCidade_PGFN.pdf'],
-        'Identificador': ['123456789', '987654321'],
-        'Modalidade': ['Parcelamento Lei 13.485', 'Transação Excepcional'],
-        'Saldo (R$)': ['10000.50', '5000.00']
-    }
+    data = {'Arquivo': ['GO_Cidade_PGFN.pdf'], 'Identificador': ['123'], 'Modalidade': ['Lei 13.485'], 'Saldo (R$)': ['1000.00']}
     return pd.DataFrame(data).to_csv(index=False, sep=',', encoding='utf-8-sig').encode('utf-8-sig')
 
 def carregar_responsaveis(arquivo):
@@ -81,72 +94,81 @@ def carregar_responsaveis(arquivo):
             for _, row in df.iterrows():
                 key = normalize_key_standard(row[col_muni])
                 dic[key] = str(row[col_resp]).strip()
+                # Cria chave nospace também para facilitar
+                dic[normalize_key_nospace(row[col_muni])] = str(row[col_resp]).strip()
         return dic
     except: return {}
 
 def carregar_pgfn_csv(arquivo):
     """
-    Lê o CSV de Extrato PGFN e agrupa por município.
-    Retorna: { 'BARROALTO': [ {row_data}, ... ] }
+    Lê o CSV PGFN e retorna DOIS dicionários:
+    1. dados_pgfn: { 'CHAVENOSPACE': [lista de debitos] }
+    2. meta_pgfn: { 'CHAVENOSPACE': {'UF': 'GO', 'NomeOriginal': 'BarroAlto'} }
     """
     try:
-        if arquivo.name.endswith('.csv'):
-            df = pd.read_csv(arquivo)
-        else:
-            df = pd.read_excel(arquivo)
+        if arquivo.name.endswith('.csv'): df = pd.read_csv(arquivo)
+        else: df = pd.read_excel(arquivo)
         
-        # Identifica colunas (flexível)
         cols = {c.lower(): c for c in df.columns}
         col_arq = cols.get('arquivo', df.columns[0])
         col_id = next((c for c in df.columns if 'identificador' in c.lower() or 'processo' in c.lower()), None)
         col_mod = next((c for c in df.columns if 'modalidade' in c.lower()), None)
         col_val = next((c for c in df.columns if 'saldo' in c.lower() or 'valor' in c.lower()), None)
 
-        dados_por_muni = {}
+        dados = {}
+        meta = {}
 
         for _, row in df.iterrows():
-            # Extrai cidade do nome do arquivo (ex: GO_BarroAlto_...)
             nome_arq = str(row[col_arq])
             parts = nome_arq.split('_')
             
+            cidade_raw = "DESCONHECIDO"
+            uf_raw = "GO"
+            
+            # Tenta extrair UF e Cidade do nome do arquivo (Padrão: UF_Cidade_...)
             if len(parts) >= 2:
-                # Assume que a cidade é a segunda parte (parts[1])
-                # Ex: GO (0), BarroAlto (1), ...
-                cidade_raw = parts[1]
-                key = normalize_key_nospace(cidade_raw)
-                
-                if key not in dados_por_muni:
-                    dados_por_muni[key] = []
-                
-                valor = row[col_val]
-                # Limpeza básica de valor se vier como string R$
-                if isinstance(valor, str):
-                    valor = valor.replace('R$', '').replace('.', '').replace(',', '.')
-                
-                try:
-                    valor_float = float(valor)
-                except:
-                    valor_float = 0.0
+                # Checa se o primeiro é UF
+                if len(parts[0]) == 2:
+                    uf_raw = parts[0].upper()
+                    cidade_raw = parts[1]
+                else:
+                    cidade_raw = parts[0]
+            
+            key = normalize_key_nospace(cidade_raw)
+            
+            # Salva Metadados se ainda não tiver
+            if key not in meta:
+                meta[key] = {'UF': uf_raw, 'Nome': cidade_raw}
+            
+            if key not in dados: dados[key] = []
+            
+            val_str = str(row[col_val]).replace('R$', '').replace('.', '').replace(',', '.')
+            try: val_float = float(val_str)
+            except: val_float = 0.0
 
-                dados_por_muni[key].append({
-                    'Processo': str(row[col_id]),
-                    'Modalidade': str(row[col_mod]),
-                    'Valor Original': valor_float,
-                    'Fonte': 'PGFN CSV'
-                })
-        
-        return dados_por_muni
-
+            dados[key].append({
+                'Processo': str(row[col_id]),
+                'Modalidade': str(row[col_mod]),
+                'Valor Original': val_float,
+                'Fonte': 'PGFN CSV'
+            })
+            
+        return dados, meta
     except Exception as e:
         st.error(f"Erro ao ler PGFN: {e}")
-        return {}
+        return {}, {}
 
-def buscar_responsavel(muni_divida, db_resp):
-    target = normalize_key_standard(muni_divida)
-    if target in db_resp: return db_resp[target]
-    # Busca aproximada
+def buscar_responsavel(muni_display, key_nospace, db_resp):
+    # 1. Tenta pela chave sem espaços (mais garantido)
+    if key_nospace in db_resp: return db_resp[key_nospace]
+    
+    # 2. Tenta pelo nome display normalizado
+    norm_std = normalize_key_standard(muni_display)
+    if norm_std in db_resp: return db_resp[norm_std]
+    
+    # 3. Busca aproximada
     for k in db_resp:
-        if k.startswith(target) or target.startswith(k):
+        if k.startswith(norm_std) or norm_std.startswith(k):
             return db_resp[k]
     return "PREFEITO(A) MUNICIPAL"
 
@@ -156,10 +178,8 @@ def replace_everywhere(doc: Document, old: str, new: str) -> None:
     def repl(par):
         if old in par.text:
             for run in par.runs:
-                if old in run.text:
-                    run.text = run.text.replace(old, new)
-            if old in par.text:
-                par.text = par.text.replace(old, new)
+                if old in run.text: run.text = run.text.replace(old, new)
+            if old in par.text: par.text = par.text.replace(old, new)
     for p in doc.paragraphs: repl(p)
     for t in doc.tables:
         for row in t.rows:
@@ -178,82 +198,68 @@ def formatar_valor(val):
 def adicionar_linha_tabela(table, orgao, modalidade, processo, valor, is_placeholder=False):
     row_cells = table.add_row().cells
     
-    # --- Coluna 1: Órgão e Modalidade ---
     p1 = row_cells[0].paragraphs[0]
-    p1.alignment = WD_ALIGN_PARAGRAPH.LEFT # Alinhado à ESQUERDA
-    r_org = p1.add_run(orgao)
-    
+    p1.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    p1.add_run(orgao)
     if modalidade and not is_placeholder:
-        r_mod = p1.add_run(f"\n({modalidade})")
-        r_mod.font.size = Pt(8) # Fonte menor para modalidade
+        p1.add_run(f"\n({modalidade})").font.size = Pt(8)
 
-    # --- Coluna 2: Processo ---
     p2 = row_cells[1].paragraphs[0]
-    p2.alignment = WD_ALIGN_PARAGRAPH.CENTER # CENTRALIZADO
+    p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p2.add_run(processo)
 
-    # --- Coluna 3: Valor ---
     p3 = row_cells[2].paragraphs[0]
-    p3.alignment = WD_ALIGN_PARAGRAPH.CENTER # CENTRALIZADO (Solicitado)
+    p3.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p3.add_run(valor)
 
-    # Ajuste geral de fonte
     for cell in row_cells:
         cell.vertical_alignment = 1
         for p in cell.paragraphs:
-            if not p.runs: continue
-            # Garante tamanho 10 para o texto principal, 8 já foi setado para mod
-            if p.runs[0].font.size != Pt(8):
+            if p.runs and p.runs[0].font.size != Pt(8):
                 p.runs[0].font.size = Pt(10)
 
-def preencher_tabela(table, df_rfb_muni, lista_pgfn_muni):
+def preencher_tabela(table, df_rfb, lista_pgfn):
     table.style = 'Table Grid'
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False 
 
-    # Cabeçalho
     hdr_cells = table.rows[0].cells
     titulos = ['Órgão / Modalidade', 'Processo / Documento', 'Saldo em 31/12/2025']
-    for i, titulo in enumerate(titulos):
-        hdr_cells[i].text = titulo
+    for i, t in enumerate(titulos):
+        hdr_cells[i].text = t
         for p in hdr_cells[i].paragraphs:
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             for run in p.runs:
                 run.font.bold = True
                 run.font.size = Pt(10)
-            if not p.runs: p.add_run(titulo).font.bold = True
+            if not p.runs: p.add_run(t).font.bold = True
 
-    # 1. Dados RFB (Excel)
-    # Filtra o que NÃO é PGFN no Excel
-    df_rfb = df_rfb_muni[~df_rfb_muni['Sistema'].astype(str).str.contains("PGFN", case=False, na=False)]
-    
+    # RFB
     if not df_rfb.empty:
-        for _, row in df_rfb.iterrows():
-            mod = str(row['Modalidade']) if pd.notna(row['Modalidade']) else ""
-            adicionar_linha_tabela(table, "Receita Federal do Brasil", mod, str(row['Processo']), formatar_valor(row['Valor Original']))
+        # Filtra sistemas PGFN que estejam erroneamente na RFB
+        df_clean = df_rfb[~df_rfb['Sistema'].astype(str).str.contains("PGFN", case=False, na=False)]
+        if not df_clean.empty:
+            for _, row in df_clean.iterrows():
+                mod = str(row['Modalidade']) if pd.notna(row['Modalidade']) else ""
+                adicionar_linha_tabela(table, "Receita Federal do Brasil", mod, str(row['Processo']), formatar_valor(row['Valor Original']))
+        else:
+            adicionar_linha_tabela(table, "Receita Federal do Brasil", "", "-", "-", True)
     else:
-        adicionar_linha_tabela(table, "Receita Federal do Brasil", "", "-", "-", is_placeholder=True)
+        adicionar_linha_tabela(table, "Receita Federal do Brasil", "", "-", "-", True)
 
-    # 2. Dados PGFN (CSV Extrato - Prioridade)
-    if lista_pgfn_muni:
-        for item in lista_pgfn_muni:
-            adicionar_linha_tabela(
-                table, 
-                "Procuradoria Geral da Fazenda Nacional", 
-                item['Modalidade'], 
-                item['Processo'], 
-                formatar_valor(item['Valor Original'])
-            )
+    # PGFN
+    if lista_pgfn:
+        for item in lista_pgfn:
+            adicionar_linha_tabela(table, "Procuradoria Geral da Fazenda Nacional", item['Modalidade'], item['Processo'], formatar_valor(item['Valor Original']))
     else:
-        # Fallback: Tenta achar PGFN no Excel original se não tiver no CSV
-        df_pgfn_excel = df_rfb_muni[df_rfb_muni['Sistema'].astype(str).str.contains("PGFN", case=False, na=False)]
-        if not df_pgfn_excel.empty:
-            for _, row in df_pgfn_excel.iterrows():
+        # Fallback RFB marking as PGFN
+        df_pgfn_ex = df_rfb[df_rfb['Sistema'].astype(str).str.contains("PGFN", case=False, na=False)] if not df_rfb.empty else pd.DataFrame()
+        if not df_pgfn_ex.empty:
+             for _, row in df_pgfn_ex.iterrows():
                 mod = str(row['Modalidade']) if pd.notna(row['Modalidade']) else ""
                 adicionar_linha_tabela(table, "Procuradoria Geral da Fazenda Nacional", mod, str(row['Processo']), formatar_valor(row['Valor Original']))
         else:
-            # Vazio
-            adicionar_linha_tabela(table, "Procuradoria Geral da Fazenda Nacional", "", "-", "-", is_placeholder=True)
+            adicionar_linha_tabela(table, "Procuradoria Geral da Fazenda Nacional", "", "-", "-", True)
 
 def inserir_tabela_no_placeholder(doc, df_rfb, lista_pgfn, placeholder="{{TABELA}}"):
     for paragraph in doc.paragraphs:
@@ -266,13 +272,12 @@ def inserir_tabela_no_placeholder(doc, df_rfb, lista_pgfn, placeholder="{{TABELA
     return False
 
 # ================= 4. INTERFACE =================
-st.title("Gerador de Ofícios 3.0 (Integrado)")
+st.title("Gerador de Ofícios 5.0 (Consolidado)")
 
-# Área de Downloads de Modelos
-with st.expander("📂 Baixar Modelos de Planilhas"):
+with st.expander("📂 Baixar Modelos"):
     c1, c2 = st.columns(2)
-    c1.download_button("📥 Modelo Responsáveis (CSV)", gerar_modelo_responsaveis(), "Modelo_Responsaveis.csv", "text/csv")
-    c2.download_button("📥 Modelo Extrato PGFN (CSV)", gerar_modelo_pgfn(), "Modelo_Extrato_PGFN.csv", "text/csv")
+    c1.download_button("📥 Modelo Responsáveis", gerar_modelo_responsaveis(), "Modelo_Responsaveis.csv", "text/csv")
+    c2.download_button("📥 Modelo Extrato PGFN", gerar_modelo_pgfn(), "Modelo_Extrato_PGFN.csv", "text/csv")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -287,102 +292,127 @@ num_inicial = st.sidebar.number_input("Nº Inicial", value=46)
 ano_doc = st.sidebar.number_input("Ano", value=2026)
 
 # ================= 5. PROCESSAMENTO =================
-if st.button("🚀 Gerar Arquivos (ZIP)"):
-    if not uploaded_excel or not uploaded_template:
-        st.error("Arquivos 1 e 2 são obrigatórios.")
+if st.button("🚀 Gerar Arquivos"):
+    if not uploaded_template:
+        st.error("Modelo Word é obrigatório.")
+        st.stop()
+    if not uploaded_excel and not uploaded_pgfn:
+        st.error("É necessário enviar pelo menos uma fonte de dados (RFB ou PGFN).")
         st.stop()
     
-    # Cargas
+    # Cargas Auxiliares
     db_resp = carregar_responsaveis(uploaded_resp) if uploaded_resp else {}
-    db_pgfn = carregar_pgfn_csv(uploaded_pgfn) if uploaded_pgfn else {}
+    dados_pgfn, meta_pgfn = carregar_pgfn_csv(uploaded_pgfn) if uploaded_pgfn else ({}, {})
     
-    if uploaded_pgfn:
-        st.success(f"PGFN: Dados carregados para {len(db_pgfn)} municípios.")
-
     try:
-        df = pd.read_excel(uploaded_excel, engine='openpyxl')
-        df = df.dropna(subset=['Processo'])
-        col_muni = 'Município' if 'Município' in df.columns else df.columns[0]
-        df[col_muni] = df[col_muni].astype(str).str.strip()
-        
-        # Lista unificada de municípios
-        munis_excel = set(df[col_muni].unique())
-        # Mapeia chaves PGFN de volta para nomes legíveis é difícil, vamos iterar pelo Excel e tentar achar no PGFN
-        # (Idealmente o Excel mestre tem todos os municipios)
-        municipios = sorted(list(munis_excel))
+        # Processa RFB
+        df_rfb = pd.DataFrame()
+        if uploaded_excel:
+            df_rfb = pd.read_excel(uploaded_excel, engine='openpyxl')
+            df_rfb = df_rfb.dropna(subset=['Processo'])
+            col_muni = 'Município' if 'Município' in df_rfb.columns else df_rfb.columns[0]
+            col_arq = 'Arquivo' if 'Arquivo' in df_rfb.columns else None
+            df_rfb[col_muni] = df_rfb[col_muni].astype(str).str.strip()
+            # Cria chave para merge
+            df_rfb['Key'] = df_rfb[col_muni].apply(normalize_key_nospace)
+            
+            # Função para extrair UF do RFB
+            def get_uf_rfb(row):
+                if col_arq and pd.notna(row[col_arq]): return extrair_uf_filename(row[col_arq])
+                return "GO"
+            df_rfb['UF_Ref'] = df_rfb.apply(get_uf_rfb, axis=1)
 
-        zip_buffer = io.BytesIO()
+        # --- CONSOLIDAÇÃO DA LISTA DE MUNICÍPIOS ---
+        # Cria um dicionário mestre: { 'KEY_NOSPACE': { 'NomeDisplay': '...', 'UF': '...' } }
+        mestre_munis = {}
+        
+        # 1. Adiciona do RFB
+        if not df_rfb.empty:
+            for _, row in df_rfb.iterrows():
+                k = row['Key']
+                if k not in mestre_munis:
+                    mestre_munis[k] = {'Nome': row[col_muni], 'UF': row['UF_Ref']}
+        
+        # 2. Adiciona do PGFN (Se não existir, cria. Se existir, mantém RFB que é mais confiável no nome)
+        for k, meta in meta_pgfn.items():
+            if k not in mestre_munis:
+                # Tenta formatar 'BarroAlto' -> 'Barro Alto'
+                nome_formatado = format_camel_case(meta['Nome'])
+                mestre_munis[k] = {'Nome': nome_formatado, 'UF': meta['UF']}
+
+        # Agrupa por UF para gerar ZIPs
+        munis_por_uf = {}
+        for k, dados in mestre_munis.items():
+            uf = dados['UF']
+            if uf not in munis_por_uf: munis_por_uf[uf] = []
+            munis_por_uf[uf].append({'Key': k, 'Nome': dados['Nome']})
+        
+        # Ordena UFs
+        ufs_ordenadas = sorted(munis_por_uf.keys())
+        
         contador = num_inicial
-        hoje = datetime.now()
-        meses = {1:"janeiro", 2:"fevereiro", 3:"março", 4:"abril", 5:"maio", 6:"junho",
-                 7:"julho", 8:"agosto", 9:"setembro", 10:"outubro", 11:"novembro", 12:"dezembro"}
-        data_extenso = f"Goiânia, {hoje.day} de {meses[hoje.month]} de {hoje.year}."
-
-        progress = st.progress(0)
         logs = []
-        
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            for i, muni in enumerate(municipios):
-                uploaded_template.seek(0)
-                doc = Document(uploaded_template)
+        st.write("---")
+        st.subheader("⬇️ Downloads Disponíveis")
 
-                # Dados RFB
-                df_rfb_muni = df[df[col_muni] == muni]
-                
-                # Dados PGFN (Busca por chave sem espaço)
-                key_pgfn = normalize_key_nospace(muni)
-                lista_pgfn = db_pgfn.get(key_pgfn, [])
-                
-                # Se não achou exato, tenta busca parcial (ex: BarroAlto vs BARROALTO)
-                if not lista_pgfn:
-                     for k in db_pgfn:
-                         if key_pgfn in k or k in key_pgfn:
-                             lista_pgfn = db_pgfn[k]
-                             break
+        for uf in ufs_ordenadas:
+            lista_alvo = sorted(munis_por_uf[uf], key=lambda x: x['Nome'])
+            
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                for item in lista_alvo:
+                    key = item['Key']
+                    nome_display = item['Nome']
+                    
+                    # Filtra Dados
+                    df_rfb_muni = df_rfb[df_rfb['Key'] == key] if not df_rfb.empty else pd.DataFrame()
+                    lista_pgfn_muni = dados_pgfn.get(key, [])
+                    
+                    # Prefeito
+                    nome_pref = buscar_responsavel(nome_display, key, db_resp)
+                    if nome_pref == "PREFEITO(A) MUNICIPAL" and db_resp:
+                        logs.append(f"⚠️ {nome_display} ({uf}): Responsável não encontrado.")
 
-                # UF
-                uf = "GO"
-                if not df_rfb_muni.empty and 'Arquivo' in df_rfb_muni.columns:
-                    try: 
-                        parts = str(df_rfb_muni.iloc[0]['Arquivo']).split('-')
-                        if len(parts) > 0 and len(parts[0].strip()) == 2: uf = parts[0].strip()
-                    except: pass
-                
-                # Prefeito
-                nome_pref = buscar_responsavel(muni, db_resp)
-                if nome_pref == "PREFEITO(A) MUNICIPAL" and db_resp:
-                    logs.append(f"⚠️ {muni}: Responsável não encontrado.")
+                    # Doc
+                    uploaded_template.seek(0)
+                    doc = Document(uploaded_template)
+                    
+                    hoje = datetime.now()
+                    meses = {1:"janeiro", 2:"fevereiro", 3:"março", 4:"abril", 5:"maio", 6:"junho",
+                             7:"julho", 8:"agosto", 9:"setembro", 10:"outubro", 11:"novembro", 12:"dezembro"}
+                    
+                    replaces = {
+                        "{{MUNICIPIO}}": nome_display.upper(),
+                        "{{UF}}": uf,
+                        "{{PREFEITO}}": nome_pref.upper(),
+                        "{{NUM_OFICIO}}": f"{contador:03d}/{ano_doc}",
+                        "{{DATA_EXTENSO}}": f"Goiânia, {hoje.day} de {meses[hoje.month]} de {hoje.year}."
+                    }
+                    for k_rep, v_rep in replaces.items(): replace_everywhere(doc, k_rep, v_rep)
+                    
+                    # Tabela
+                    sucesso = inserir_tabela_no_placeholder(doc, df_rfb_muni, lista_pgfn_muni, "{{TABELA}}")
+                    if not sucesso: inserir_tabela_no_placeholder(doc, df_rfb_muni, lista_pgfn_muni, "{{TABELA_DEBITOS}}")
 
-                # Replaces
-                replaces = {
-                    "{{MUNICIPIO}}": muni.upper(),
-                    "{{UF}}": uf,
-                    "{{PREFEITO}}": nome_pref.upper(),
-                    "{{NUM_OFICIO}}": f"{contador:03d}/{ano_doc}",
-                    "{{DATA_EXTENSO}}": data_extenso
-                }
-                for k, v in replaces.items(): replace_everywhere(doc, k, v)
-                
-                # Tabela
-                sucesso = inserir_tabela_no_placeholder(doc, df_rfb_muni, lista_pgfn, "{{TABELA}}")
-                if not sucesso:
-                    inserir_tabela_no_placeholder(doc, df_rfb_muni, lista_pgfn, "{{TABELA_DEBITOS}}")
+                    doc_io = io.BytesIO()
+                    doc.save(doc_io)
+                    fname = f"{contador:03d}-{ano_doc} - {uf} - {nome_display} - Saldo Divida RFB-PGFN.docx"
+                    zf.writestr(fname, doc_io.getvalue())
+                    
+                    contador += 1
+            
+            st.download_button(
+                f"📦 Baixar Ofícios - {uf} ({len(lista_alvo)} un.)",
+                zip_buffer.getvalue(),
+                f"Oficios_{uf}_{datetime.now().strftime('%H%M')}.zip",
+                "application/zip",
+                key=f"btn_{uf}"
+            )
 
-                # Salva
-                doc_io = io.BytesIO()
-                doc.save(doc_io)
-                fname = f"{contador:03d}-{ano_doc} - {uf} - {muni} - Saldo Divida RFB-PGFN.docx"
-                zf.writestr(fname, doc_io.getvalue())
-                
-                contador += 1
-                progress.progress((i+1)/len(municipios))
-        
-        st.success(f"✅ Sucesso! {len(municipios)} documentos gerados.")
+        st.success(f"✅ Processo Finalizado! Total de {contador - num_inicial} documentos.")
         if logs:
             with st.expander("Alertas"):
                 for l in logs: st.write(l)
-        
-        st.download_button("⬇️ Baixar ZIP", zip_buffer.getvalue(), f"Oficios_{datetime.now().strftime('%H%M')}.zip", "application/zip")
 
     except Exception as e:
-        st.error(f"Erro: {e}")
+        st.error(f"Erro Crítico: {e}")
