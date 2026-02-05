@@ -14,7 +14,7 @@ import re
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Gerador de Ofícios - ConPrev", layout="wide")
 
-# ================= 1. FUNÇÕES DE LIMPEZA E NORMALIZAÇÃO =================
+# ================= 1. FUNÇÕES DE LIMPEZA E FORMATAÇÃO =================
 
 def remove_accents(input_str):
     if not isinstance(input_str, str): return str(input_str)
@@ -42,6 +42,26 @@ def format_camel_case(text):
     if " " in text: return text
     return re.sub(r'(?<!^)(?=[A-Z])', ' ', text)
 
+def formatar_nome_proprio(texto):
+    """
+    Converte para Title Case respeitando preposições brasileiras (de, da, do...).
+    Ex: 'JOÃO DA SILVA' -> 'João da Silva'
+    """
+    if not isinstance(texto, str) or not texto: return ""
+    
+    excecoes = ['da', 'de', 'do', 'das', 'dos', 'e', 'em']
+    palavras = texto.lower().split()
+    resultado = []
+    
+    for i, palavra in enumerate(palavras):
+        # A primeira palavra sempre é capitalizada, as outras dependem da lista de exceções
+        if palavra in excecoes and i != 0:
+            resultado.append(palavra)
+        else:
+            resultado.append(palavra.capitalize())
+            
+    return " ".join(resultado)
+
 def extrair_uf_filename(nome_arquivo):
     if not isinstance(nome_arquivo, str): return "GO"
     parts = nome_arquivo.replace(" ", "_").split('_')
@@ -65,9 +85,6 @@ def gerar_modelo_pgfn():
     return pd.DataFrame(data).to_csv(index=False, sep=',', encoding='utf-8-sig').encode('utf-8-sig')
 
 def carregar_responsaveis(arquivo):
-    """
-    Carrega a lista de responsáveis priorizando a coluna 'Nome Extraído'.
-    """
     try:
         if arquivo.name.endswith('.csv'):
             try: df = pd.read_csv(arquivo, sep=';', encoding='utf-8-sig')
@@ -77,23 +94,17 @@ def carregar_responsaveis(arquivo):
         else:
             df = pd.read_excel(arquivo)
         
-        # Normaliza colunas
         df.columns = [remove_accents(c).strip().lower() for c in df.columns]
         
-        # --- LÓGICA DE PRIORIDADE DE COLUNAS ---
-        
-        # 1. Tenta achar especificamente "Nome Extraido" (Sua planilha V2)
+        # Prioridade para 'Nome Extraído'
         col_resp = next((c for c in df.columns if 'nome extraido' in c), None)
-        
-        # 2. Se não achar, tenta "Responsável", "Prefeito" (Planilha V1)
         if not col_resp:
             col_resp = next((c for c in df.columns if any(k in c for k in ['responsavel', 'prefeito', 'gestor'])), None)
             
-        # 3. Para cidade/órgão
         col_muni = next((c for c in df.columns if any(k in c for k in ['orgao', 'entidade', 'municipio', 'cidade'])), None)
         
         if not col_muni or not col_resp:
-            st.error(f"⚠️ Não foi possível identificar as colunas na lista de responsáveis. Colunas lidas: {list(df.columns)}")
+            st.error(f"⚠️ Erro ao identificar colunas de responsáveis. Lidas: {list(df.columns)}")
             return {}
         
         dic = {}
@@ -101,8 +112,6 @@ def carregar_responsaveis(arquivo):
             val_muni = str(row[col_muni])
             val_resp = str(row[col_resp]).strip()
             
-            # Cria chaves normalizadas para facilitar o encontro
-            # Ex: "MUNICIPIO DE ALMAS" -> "ALMAS"
             dic[normalize_key_standard(val_muni)] = val_resp
             dic[normalize_key_nospace(val_muni)] = val_resp
             
@@ -158,19 +167,13 @@ def carregar_pgfn_csv(arquivo):
         return {}, {}
 
 def buscar_responsavel(muni_display, key_nospace, db_resp):
-    # 1. Busca exata pela chave sem espaços
     if key_nospace in db_resp: return db_resp[key_nospace]
-    
-    # 2. Busca pelo nome normalizado
     norm_std = normalize_key_standard(muni_display)
     if norm_std in db_resp: return db_resp[norm_std]
-    
-    # 3. Busca aproximada
     for k in db_resp:
         if k.startswith(norm_std) or norm_std.startswith(k):
             return db_resp[k]
-            
-    return "PREFEITO(A) MUNICIPAL"
+    return "Prefeito(a) Municipal" # Retorno também em Title Case
 
 # ================= 3. MANIPULAÇÃO WORD =================
 
@@ -198,6 +201,7 @@ def formatar_valor(val):
 def adicionar_linha_tabela(table, orgao, modalidade, processo, valor, is_placeholder=False):
     row_cells = table.add_row().cells
     
+    # --- Coluna 1 ---
     p1 = row_cells[0].paragraphs[0]
     p1.alignment = WD_ALIGN_PARAGRAPH.LEFT
     p1.add_run(orgao)
@@ -208,6 +212,7 @@ def adicionar_linha_tabela(table, orgao, modalidade, processo, valor, is_placeho
     elif modalidade and modalidade.lower() != 'nan':
         p1.add_run(f"\n({modalidade})").font.size = Pt(8)
 
+    # --- Coluna 2 ---
     p2 = row_cells[1].paragraphs[0]
     p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
     if processo and processo.lower() != 'nan':
@@ -215,6 +220,7 @@ def adicionar_linha_tabela(table, orgao, modalidade, processo, valor, is_placeho
     else:
         p2.add_run("-")
 
+    # --- Coluna 3 ---
     p3 = row_cells[2].paragraphs[0]
     p3.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p3.add_run(valor)
@@ -285,7 +291,7 @@ def inserir_tabela_no_placeholder(doc, df_rfb, lista_pgfn, placeholder="{{TABELA
     return False
 
 # ================= 4. INTERFACE =================
-st.title("Gerador de Ofícios 8.1 (Correção Responsável)")
+st.title("Gerador de Ofícios 8.2 (Nomes Formatados)")
 
 with st.expander("📂 Baixar Modelos"):
     c1, c2 = st.columns(2)
@@ -316,9 +322,6 @@ if st.button("🚀 Gerar Arquivos"):
     db_resp = carregar_responsaveis(uploaded_resp) if uploaded_resp else {}
     dados_pgfn, meta_pgfn = carregar_pgfn_csv(uploaded_pgfn) if uploaded_pgfn else ({}, {})
     
-    if uploaded_resp and not db_resp:
-        st.warning("⚠️ Planilha de responsáveis lida, mas nenhuma informação foi extraída. Verifique os títulos das colunas.")
-
     try:
         df_rfb = pd.DataFrame()
         if uploaded_excel:
@@ -372,16 +375,20 @@ if st.button("🚀 Gerar Arquivos"):
                     lista_pgfn_muni = dados_pgfn.get(key, [])
                     
                     nome_pref = buscar_responsavel(nome_display, key, db_resp)
-                    if nome_pref == "PREFEITO(A) MUNICIPAL" and db_resp:
+                    if nome_pref.lower() == "prefeito(a) municipal" and db_resp:
                         logs.append(f"⚠️ {nome_display} ({uf}): Responsável não encontrado.")
 
                     uploaded_template.seek(0)
                     doc = Document(uploaded_template)
                     
+                    # APLICANDO A FORMATAÇÃO DE NOME PRÓPRIO (TITLE CASE)
+                    nome_cidade_fmt = formatar_nome_proprio(nome_display)
+                    nome_pref_fmt = formatar_nome_proprio(nome_pref)
+                    
                     replaces = {
-                        "{{MUNICIPIO}}": f"{nome_display.upper()} – {uf}", 
+                        "{{MUNICIPIO}}": f"{nome_cidade_fmt} – {uf}", 
                         "{{UF}}": uf,
-                        "{{PREFEITO}}": nome_pref.upper(),
+                        "{{PREFEITO}}": nome_pref_fmt,
                         "{{NUM_OFICIO}}": f"{contador:03d}/{ano_doc}",
                         "{{DATA_EXTENSO}}": f"Goiânia, {hoje.day} de {meses[hoje.month]} de {hoje.year}."
                     }
